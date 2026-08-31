@@ -270,3 +270,40 @@ label {
 .panel .confirm {
   text-align: center;
 }
+/* iyf 多集下载面板 */
+#iyfPanel {
+  margin: 0 5px 5px 5px;
+}
+#iyfPanel .flexRow {
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 5px 0;
+}
+#iyfRange {
+  width: 5em;
+}
+#iyfEpList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+#iyfEpList .iyfEp {
+  border: 1px solid #cccccc77;
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+#iyfEpStatus {
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.iyfEpRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 1px 5px;
+}
+.iyfWarn {
+  color: #c00;
+  text-align: center;
+}

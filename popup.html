@@ -37,8 +37,33 @@
   <div id="Tips" data-i18n="loadingData">
   </div>
   <div id="TipsFixed">~</div>
-  <div id="iyfPanel" class="container hide">
+  <div id="iyfPanel" class="hide">
     <div class="otherTips">本剧下载</div>
+    <div id="iyfSelectView" class="hide">
+      <div class="flexRow">
+        <button id="iyfToggleAll" class="button2" title="全选/全不选">全选/全不选</button>
+        <input id="iyfRange" type="text" placeholder="如 3-10" title="集数区间" />
+        <button id="iyfRangeApply" class="button2" title="按区间勾选">选区间</button>
+        <b class="nowrap">画质</b>
+        <select id="iyfQuality" title="画质">
+          <option value="">自动(逐集最高)</option>
+        </select>
+        <button id="iyfStart" title="下载选中集">下载选中集</button>
+      </div>
+      <div id="iyfEpList"></div>
+    </div>
+    <div id="iyfProgressView" class="hide">
+      <div id="iyfRestoredTip" class="iyfWarn hide">任务因扩展重启已中断</div>
+      <div id="iyfProgressSummary" class="otherTips"></div>
+      <div id="iyfEpStatus"></div>
+      <div id="iyfFailedList" class="iyfWarn hide"></div>
+      <div class="flexRow">
+        <button id="iyfCancel" class="button2" title="取消任务">取消任务</button>
+        <button id="iyfRetryFailed" class="button2 hide" title="重下失败集">重下失败集</button>
+        <button id="iyfReselect" class="button2 hide" title="重新选择">重新选择</button>
+      </div>
+    </div>
+    <div class="line"></div>
   </div>
   <div id="mediaList" class="container hide TabShow"></div>
   <div id="allMediaList" class="container hide"></div>
@@ -144,6 +169,7 @@
   <script src="lib/mqtt.min.js"></script>
   <script src="js/popup-utils.js"></script>
   <script src="js/popup.js"></script>
+  <script src="js/iyf-panel.js"></script>
   <script src="js/media-control.js"></script>
   <script src="lib/jquery.qrcode.min.js"></script>
   <script src="lib/hls.min.js"></script>
