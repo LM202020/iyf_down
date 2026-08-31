@@ -210,6 +210,7 @@
 ### 13.5 安全护栏与已知上限
 - chunklist parser 只认 6 个标准 tag 白名单;见 `EXT-X-KEY`/`EXT-X-MAP`/`EXT-X-BYTERANGE`/master/未知 tag → 明确报错,绝不静默产坏文件。
 - 整集 ts+mp4 驻内存(样本集 ~110MB,峰值约 2 倍);m3u8.js 有 1.8G 上限经验值,超长片有内存风险 → 真遇到再做流式落盘(代码内有 ponytail 注)。
+- **站点访问频率风控(端到端实测暴露)**:短时间对同一账号/IP 连发多个 `video/play` 取数会触发 iyf「访问过量」风控(播放页重定向 `iyf.tv/challenge?...triggerindex=访问过量`,取数返回 `empty clarity`);批量整剧一次性并发取数(iyfPump 同时放行 N 集→N 个 video/play 并发)易撞。风控在**取数阶段**,下载走 CDN 不受影响。→ 缓解候选(待拍板):集间取数节流 / 降默认并发 / 撞风控时退避重试。当前版本未实现节流(YAGNI,待用户确认需要)。
 
 ### 13.6 验收(=impl-plan T11)
 样本剧前 3 集:本地落盘 mp4、ffprobe H264+AAC 可播、命名 `这一秒过火/这一秒过火-第NN集.mp4` 零填充、状态机全 done(靠消息不靠 tab 关闭)、全程无 m3u8.html/ffmpeg tab、无弹框无第三方。
