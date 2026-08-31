@@ -23,8 +23,16 @@
   - 验收:`node js/iyf-sign.js` 自检通过,对侦察样本 query 算出的 vv 精确等于 `bba708cd5c5df95d5bc6cd1ef0a0ac23`。
 - [x] **T7 取数层加签名 + 探针**:`js/iyf-api.js` 取数前经 MAIN world `fetch(location.href)` 读 `pConfig`(每会话缓存)、给 `languagesplaylist`/`video/play` URL 加签名;`js/iyf-orchestrator.js` 加启动签名探针(code:1 报「签名规则已变」中止)+ 拿到 m3u8 后签名并作 `tsAddArg` 传 openParser;background.js importScripts 加 `iyf-sign.js`。
   - 验收:样本剧探针 `code:0`;`languagesplaylist` 返回 33 集;`video/play` 返回 576 档 m3u8。
-- [ ] **T8 端到端(吸收 T5)**:样本剧真落盘 3 集 mp4,`tsAddArg` 后缀生效使 ts 下载成功;确认 vv/pub 的 `encodeURIComponent` 坑、master/media 多层 m3u8 是否需分别签名。
-  - 验收:3 个 mp4 落盘、命名 `这一秒过火/这一秒过火-第NN集.mp4` 零填充正确、大小合理、全程无弹框。
+- [x] **T8 端到端(吸收 T5)**:~~`tsAddArg` 后缀生效使 ts 下载成功~~ **实测裁决相反**:tsAddArg 截掉 ts 原有 vendtime/vhash 致 CDN reset(T5 卡 0/215 真因);CDN 会把 chunklist 的 vv/pub 回填进每个 ts URL → **只签 chunklist、去 tsAddArg**(42c57ba)。过渡版(forceLocal 走 m3u8.js 本地 mux)落盘 3 集可播 mp4(H264+AAC,41–44min,104–120MB)。
+  - 验收:已达成(过渡版);过渡 hack 由 T9 撤销,最终验收归 T11。
+
+### 方案2:自写精简下载页(依据设计文档 §13)
+
+- [x] **T9 自写下载器**:`iyf-dl.html`+`js/iyf-dl.js`(chunklist 白名单 parser+最小并发器+mux.js remux+完成信号,parser 带 node 自检);orchestrator `openParser`→`iyfOpenDownloader`,完成信号消息化(幂等锚 iyfParserTabs,onRemoved 降级兜底);background +2 消息;撤销 m3u8.js forceLocal 3 行(核心恢复零改动)。实现 9cd1edb,评审修正 7b6d2b6(幂等结算 + 等落盘 complete 再自关)。
+  - 验收:`node js/iyf-dl.js`、`node js/iyf-job.js` 自检过;触及文件 `node --check` 过。
+- [~] **T10 仓库独立化 `iyf_down`**:已完成——非-fork 仓库 `LM202020/iyf_down` 建立、origin 已指向、upstream 已删、manifest homepage_url 已指(c5e4b57)。待做——README/CLAUDE.md 身份改造(cat-catch/猫抓表述改 iyf_down,**保留 LICENSE + 注明基于 cat-catch (GPL-3.0) 二开**);端到端过后 push(c5e4b57 起尚未 push)。
+- [ ] **T11 端到端(方案2 最终验收)**:样本剧前 3 集经 iyf-dl 路径落盘。
+  - 验收:3 个 mp4 落盘、ffprobe H264+AAC 可播、命名 `这一秒过火/这一秒过火-第NN集.mp4` 零填充、状态机全 done(靠消息)、全程无 m3u8.html/ffmpeg tab、无弹框。
 
 ## 关键常量/事实(供各 subagent)
 - `IYF_HOSTS = [iyf.tv, aiyifan.tv, dnvod.tv, ifsp.tv, jssp.tv, kubb.tv, lgsp.tv, flyv.tv]`
@@ -47,4 +55,7 @@
   - CDN 段**批量复用同一签名**:m3u8 签一次,每个 `media_N.ts` **照抄** m3u8 的 `&vv=...&pub=...` 后缀即可(这正是 T5 卡 `0/215` 的原因:openParser 重发 ts 没带后缀)。
   - 站点签名器(Angular DI 服务 `uriSignature`/`get_query`)闭包私有、不挂 window,**形态 B(MAIN world 直接调)不可行**;**形态 A(md5 独立重写)推荐**,无 wasm/无动态密钥,难度易。
   - 侦察脚本在 scratchpad(`verify_final.py`/`verify_vv.py`/`verify_cdn.py`/`sig_recon2.py`),含可复现测试向量。
-  - **待面谈拍板的实现分歧**:给每个 ts 拼 vv/pub 后缀这一步,如何在**不改猫抓核心 m3u8.js** 前提下落地(候选:自己 fetch+改写 playlist 后喂 openParser / DNR 动态给 ts 请求加 query / 其他)。走 `/grill-with-docs` 敲定后进入实现(改 T2 取数层加签名、新写签名纯函数模块 TDD)。
+  - **待面谈拍板的实现分歧**:给每个 ts 拼 vv/pub 后缀这一步,如何在**不改猫抓核心 m3u8.js** 前提下落地(候选:自己 fetch+改写 playlist 后喂 openParser / DNR 动态给 ts 请求加 query / 其他)。走 `/grill-with-docs` 敲定后进入实现(改 T2 取数层加签名、新写签名纯函数模块 TDD)。→ **后续实测证明分歧本身不存在**:CDN 回填使 ts 无需拼任何参数,见 T8/42c57ba。
+- 2026-08-31:T6/T7 完成提交(f227349、18ad2c6)。**T8 端到端(过渡版)跑通并固化 42c57ba**——tsAddArg 判废(截 vendtime/vhash 致 CDN reset),改「只签 chunklist,CDN 回填 ts 签名」;`video/play` 取分集需 `a=0`;m3u8.js 临时加 forceLocal 3 行走本地 mux。3 个可播 mp4 证据留存上轮 scratchpad `downloads/`。用户拍板**方案2**(自写下载页替代 openParser 通道)+ **仓库独立化 iyf_down**。c5e4b57:建非-fork 仓库 `LM202020/iyf_down`、origin 迁移、upstream 删除、homepage_url 改指;iyf-dl.html/js 新文件同车。
+- 2026-08-31:**交接事故记录**:上轮 session 交接卡声称方案2改动已提交为 `43ba95d`、交接卡自身提交为 `6a1e3f8`——两 SHA 经 reflog 核实**从不存在**,改动实际悬在工作树、卡也未落盘(草稿在上轮 scratchpad RESUME.md)。本轮接手后按 git 现读重建:方案2原样固化 9cd1edb。
+- 2026-08-31:T9 完成——评审 9cd1edb 发现两处问题并修正提交 7b6d2b6:①done/failed 消息结算不查 iyfParserTabs 且信任消息 index,与 onRemoved 兜底有双结算竞态 → 幂等锚定 map、索引取 map 值;②iyf-dl 落盘启动 800ms 后即 window.close,blob URL 随页面销毁会掐断大文件写盘 → 等 downloads.onChanged state=complete(同 m3u8.js:912 时机)再报再关。设计文档 §13 + 本计划 T9–T11 补齐。T11 端到端进行中。

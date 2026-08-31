@@ -176,3 +176,40 @@
 ### 12.6 实现坑(实测确认项,非决策)
 - `tsAddArg` 在 m3u8.js 侧被 decode 两次、`openParser` 只 encode 一次;且 `pub` 为 base64-ish 可能含 `+`(在 query 里会被当空格)。→ **对 vv/pub 值 `encodeURIComponent` 再拼 tsAddArg**,端到端确认。
 - master vs media 多层 m3u8 是否都需签名 → 端到端确认(样本 576 档实测为 MEDIA level,无 master)。
+
+## 13. 方案2:自写精简下载页(2026-08-31 拍板)
+
+§12 的「签 m3u8 + `tsAddArg` 喂 openParser」下载通道被端到端实测否决,**本节取代 §12.3-#14、§12.4 第 6 步与 §12.6 第一条**;签名逆向(§12.2)、探针(§12.3-#13)、取数层(§12.5 的 iyf-sign/iyf-api)不受影响,继续有效。
+
+### 13.1 为何弃 openParser/m3u8.js 通道(实测证据,42c57ba 裁决)
+- **CDN 回填**:带 vv/pub 请求 chunklist,返回体里每个 ts 绝对 URL 已自带完整签名(vendtime/vhash/vv/pub)。→ ts **不需要**再拼参数。
+- **tsAddArg 反而致死**:它用 `RegExp("([^?]*)")` 截掉 ts 原有 query 再拼 vv/pub,把 vendtime/vhash 冲掉 → CDN reset → 卡 `0/215`(T5 真因)。
+- 只签 chunklist 走 m3u8.js 虽在过渡版(forceLocal)跑通,但要改猫抓核心 3 行且完成信号只能靠 tab 关闭猜(flake)。→ 自写下载页,m3u8.js 恢复零改动。
+
+### 13.2 数据流(替换 §12.4 第 6 步起)
+```
+6. 对 chunklist URL 的 query 签名(只签这一次,不动 ts)
+7. iyfOpenDownloader:tabs.create 打开 iyf-dl.html?url=<签好chunklist>&filename=<剧名/剧名-第NN集.mp4>
+     └▶ [iyf-dl.html 普通 tab] fetch chunklist → 白名单 parser 抽 ts URL(原样,自带签名)
+        → 最小并发器(6 线程,单片重试 3)fetch 全部 ts → mux.js Transmuxer TS→MP4 remux
+        → chrome.downloads.download(saveAs:false) 落盘,等 onChanged state=complete
+        → sendMessage(iyfEpisodeDone/Failed) → window.close
+```
+
+### 13.3 完成信号协议(根治 tab-close flake)
+- 下载页**主动消息**报结果;background 转 orchestrator 结算。
+- **幂等锚 = `iyfParserTabs`(tabId→集索引)**:tabs.create 回调直接记 id(不再 onCreated 猜);每 tab 只结算一次——消息按 `sender.tab.id` 查 map,不在 map 即丢弃,集索引取 map 值不信消息字段。
+- `tabs.onRemoved` 降级为兜底:tab 意外关闭(崩溃/手动关)且未收到消息 → 判该集失败(走集级重试)。
+- 下载页等 `downloads.onChanged state=complete` 才报/关:blob URL 属于页面,写盘未完就 close 会掐断下载(m3u8.js:912 同款时机)。
+
+### 13.4 组件(增量)
+**新写**:`iyf-dl.html` + `js/iyf-dl.js`(chunklist 白名单 parser + 最小并发器 + mux.js remux + 完成信号;parser 纯函数带 node 自检)。
+**改**:`js/iyf-orchestrator.js`(openParser→iyfOpenDownloader、消息结算、onRemoved 兜底)、`js/background.js`(+iyfEpisodeDone/Failed 两消息)。
+**恢复不碰**:`m3u8.js`(42c57ba 的 forceLocal 过渡 3 行已撤销)。
+
+### 13.5 安全护栏与已知上限
+- chunklist parser 只认 6 个标准 tag 白名单;见 `EXT-X-KEY`/`EXT-X-MAP`/`EXT-X-BYTERANGE`/master/未知 tag → 明确报错,绝不静默产坏文件。
+- 整集 ts+mp4 驻内存(样本集 ~110MB,峰值约 2 倍);m3u8.js 有 1.8G 上限经验值,超长片有内存风险 → 真遇到再做流式落盘(代码内有 ponytail 注)。
+
+### 13.6 验收(=impl-plan T11)
+样本剧前 3 集:本地落盘 mp4、ffprobe H264+AAC 可播、命名 `这一秒过火/这一秒过火-第NN集.mp4` 零填充、状态机全 done(靠消息不靠 tab 关闭)、全程无 m3u8.html/ffmpeg tab、无弹框无第三方。
