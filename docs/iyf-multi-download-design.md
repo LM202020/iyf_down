@@ -2,7 +2,7 @@
 
 - 日期:2026-08-31
 - 项目:Chrome_iyv_plug(fork 自 xifangczy/cat-catch,Chrome MV3,自用不分发)
-- 状态:设计定稿,待实测补齐若干 fact 后进入实现
+- 状态:**路线已修正(2026-08-31)——原 B 方案(真播放切集嗅探)经端到端实测被站点签名墙否决,改走「签名逆向重写」。§3–§7 为历史方案,进入实现以 §12 为准。**
 - 领域术语:见 `GLOSSARY.md`
 
 ## 1. 目标
@@ -123,3 +123,56 @@
 
 ### 仍未验证(取决于决策 1 走向)
 - fact 1/4/6(程序化切集方式、切集后画质是否保持、切集与新 m3u8 的配对)——仅当保留 A 方案时才需要;若转 B 方案则大部分作废。
+
+## 12. 路线修正:签名逆向重写(2026-08-31 端到端实测 + 面谈拍板)
+
+§3–§7 的方案(真播放切集 + webRequest 嗅探)经 T5 真实浏览器端到端实测被否决,改走本节方案。**本节取代 §3–§7 中与之冲突的部分**;背压/重试/补下/命名/UI/域名家族等决策(§3 #3–#10)不受影响,继续有效。
+
+### 12.1 为何废弃 B 方案(实测证据)
+两道站点签名墙,均需运行时 `vv`/`pub` 签名(A/B 对照实证):
+- **API 墙**:`languagesplaylist`/`video/play` 裸调(不带 vv/pub)→ `{"code":1,"msg":"用户签名错误"}`;带签名 → `code:0`。**证伪 §2「video/play 裸调即返回 m3u8」前提。**
+- **分段墙**:每个 `.ts` 也需 vv/pub。带签名 → `200/533732 bytes`,去签名 → CDN reset。原方案靠 `openParser` 重新 fetch 下载,重发的请求**不带签名**,故卡在 `0/215` 段。
+
+### 12.2 逆向结论(只读侦察,md5 精确匹配实证)
+- `vv = md5(publicKey + "&" + 归一化query + "&" + privateKey[0])`;`pub = publicKey`(明文回填,服务器据此选私钥验签)。
+- **归一化**:去掉 vv/pub 两参 → 每个值 `decodeURIComponent` 且 `+`→空格 → 保持原参数顺序 → 整串 `toLowerCase`;URL path 不参与,只签 query。
+- **密钥对来源**:play 页服务器返回的 HTML 内联 JSON `"pConfig":{"publicKey":"...","privateKey":[...]}`,每次页面加载换一对。扩展 `fetch(location.href)` 正则读一次即可。
+- **CDN 段批量复用一个签名**:chunklist.m3u8 签一次,每个 `media_N.ts` 照抄同一份 `&vv=&pub=` 后缀(实测 ts 共用同一 vv)。
+- 站点签名器是 Angular DI 服务、闭包私有不挂 window → **形态 B(MAIN world 直接调站点函数)不可行**;**形态 A(md5 独立重写)可行、难度低**(无 wasm/无动态密钥)。
+
+### 12.3 新决策(面谈 2026-08-31 拍板)
+| # | 决策点 | 定论 | 理由 |
+|---|---|---|---|
+| 1' | 取流策略(重拍决策1) | **签名逆向重写**:自算 vv/pub 直接调 API 取流,不真播放、不嗅探 | 逆向已实证难度低;真播放慢且切集机制未验证 |
+| 11 | 真播放方案去留 | **彻底弃**,不留 fallback | 养两套取流架构不划算(YAGNI);失效靠 §12.3-#13 探针暴露 |
+| 12 | 站点 fallback(pub=Date.now()+硬编码私钥) | **不实现**,拿不到 pConfig 直接报错 | 那是页面为自身竞态设计,主动取数用不上;硬编码数组同样会随站点变 |
+| 13 | 失效检测 | **启动前签名探针**:发一次已签 `video/play`,`code:1` 即判「签名规则已变」并中止任务 | 失败信号明确,不逐集失败误导排查 |
+| 14 | ts 加签名后缀 | **复用 m3u8.js 现成 `tsAddArg`**(`openParser(data,{tsAddArg:"vv=..&pub=.."})`),零核心改动 | 该机制语义正是「给每个 ts 拼同一份 query」,与批量复用签名完美吻合 |
+
+### 12.4 新数据流
+```
+[popup 面板] ─ startJob ─▶ [background 编排器]
+                            1. 注入 MAIN world:fetch(location.href) 读 pConfig{pub,priv}(每会话一次)
+                            2. 签名探针:签一个 video/play 探 → code:1 则报「签名规则已变」中止
+                            循环(受背压,默认3):
+                              3. 对 video/play?id=<集key> 签名 → 注入 MAIN world fetch → clarity
+                              4. pickQuality 选档 → 得该集 m3u8 URL
+                              5. 对 m3u8 URL 的 query 签名 → 得 vv/pub
+                              6. openParser(签好的 m3u8, {autoDown,autoClose,filename,
+                                            tsAddArg:"vv=<v>&pub=<p>"})
+                                   └▶ [m3u8.html] hls.js 拉 playlist → 每个 ts 拼 tsAddArg → fetch 下载 → 合并落盘
+```
+- **签名计算在 background 侧纯函数**(可 TDD、复用侦察测试向量);**读 pConfig 与 API fetch 在 MAIN world**(页面已过 Cloudflare、同源;background 直接 fetch 播放页有被 CF 挑战挡住的风险)。
+
+### 12.5 组件划分(增量)
+**新写**
+- `js/iyf-sign.js`:md5(自带 blueimp 实现,仓库与 MV3 SubtleCrypto 均无 md5)+ query 归一化 + `sign()` + node 自检(侦察 md5 向量)。UMD,不依赖 chrome。
+**改**
+- `js/iyf-api.js`:取数前经 MAIN world 读 pConfig;给 `languagesplaylist`/`video/play` URL 加签名。
+- `js/iyf-orchestrator.js`:加启动探针;拿到 m3u8 后签名并作 `tsAddArg` 传给 openParser。
+- `js/background.js`:importScripts 追加 `iyf-sign.js`。
+**不碰**:`m3u8.js`/`function.js`/popup 下载与嗅探核心(切集控制脚本 §6「新写」不再需要)。
+
+### 12.6 实现坑(实测确认项,非决策)
+- `tsAddArg` 在 m3u8.js 侧被 decode 两次、`openParser` 只 encode 一次;且 `pub` 为 base64-ish 可能含 `+`(在 query 里会被当空格)。→ **对 vv/pub 值 `encodeURIComponent` 再拼 tsAddArg**,端到端确认。
+- master vs media 多层 m3u8 是否都需签名 → 端到端确认(样本 576 档实测为 MEDIA level,无 master)。

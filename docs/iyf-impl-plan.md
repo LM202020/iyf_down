@@ -14,8 +14,17 @@
   - 验收:纯函数测试通过;能对选中集批量起下载 tab、遵守并发上限。
 - [x] **T4 popup 面板 UI**:集列表(勾选/全选/区间)、画质下拉(动态按 `clarity` `isEnabled&&path`,默认最高可用)、下载/取消、集级状态。发 `startJob`/`cancelJob`,读回状态。
   - 验收:面板可选集/选画质/发起/取消/看到集级进度。
-- [ ] **T5 命名 + 集成 + 端到端**:`<剧名>/<剧名>-第NN集.mp4` 零填充、`saveAs:false`;真实浏览器对短剧(3–5 集)端到端跑通。
+- [~] **T5 命名 + 集成 + 端到端**:`<剧名>/<剧名>-第NN集.mp4` 零填充、`saveAs:false`;真实浏览器对短剧端到端。**因 B 方案签名墙受阻,端到端部分并入 T8**;命名/saveAs 逻辑已单独验证正确。
   - 验收:落盘文件数/命名正确、全程无弹框。
+
+### 路线修正后新增(签名逆向重写,依据设计文档 §12)
+
+- [ ] **T6 签名层**:`js/iyf-sign.js`——自带 blueimp `md5` + query 归一化(去 vv/pub、值 decodeURIComponent 且 `+`→空格、保序、整串 toLowerCase)+ `sign(query,pub,priv)→{vv,pub}` + node assert 自检(用侦察实证的 md5 测试向量)。UMD、不依赖 chrome。
+  - 验收:`node js/iyf-sign.js` 自检通过,对侦察样本 query 算出的 vv 精确等于 `bba708cd5c5df95d5bc6cd1ef0a0ac23`。
+- [ ] **T7 取数层加签名 + 探针**:`js/iyf-api.js` 取数前经 MAIN world `fetch(location.href)` 读 `pConfig`(每会话缓存)、给 `languagesplaylist`/`video/play` URL 加签名;`js/iyf-orchestrator.js` 加启动签名探针(code:1 报「签名规则已变」中止)+ 拿到 m3u8 后签名并作 `tsAddArg` 传 openParser;background.js importScripts 加 `iyf-sign.js`。
+  - 验收:样本剧探针 `code:0`;`languagesplaylist` 返回 33 集;`video/play` 返回 576 档 m3u8。
+- [ ] **T8 端到端(吸收 T5)**:样本剧真落盘 3 集 mp4,`tsAddArg` 后缀生效使 ts 下载成功;确认 vv/pub 的 `encodeURIComponent` 坑、master/media 多层 m3u8 是否需分别签名。
+  - 验收:3 个 mp4 落盘、命名 `这一秒过火/这一秒过火-第NN集.mp4` 零填充正确、大小合理、全程无弹框。
 
 ## 关键常量/事实(供各 subagent)
 - `IYF_HOSTS = [iyf.tv, aiyifan.tv, dnvod.tv, ifsp.tv, jssp.tv, kubb.tv, lgsp.tv, flyv.tv]`
