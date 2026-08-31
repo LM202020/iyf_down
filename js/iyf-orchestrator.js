@@ -124,13 +124,12 @@ function iyfEpisodeFailed(i, err) {
     iyfPump();
 }
 
-// 开精简下载 tab(iyf-dl.html):签好的 chunklist URL、目标文件名、集索引经 query 传入。
+// 开精简下载 tab(iyf-dl.html):签好的 chunklist URL、目标文件名经 query 传入。
 // tabs.create 回调直接拿 tab.id(不再靠 onCreated 猜),记入 iyfParserTabs 供完成信号/兜底核对。
 function iyfOpenDownloader(ep) {
     const url = '/iyf-dl.html?' + new URLSearchParams({
         url: ep.url,
         filename: ep.filename,
-        index: String(ep.index),
     }).toString();
     chrome.tabs.create({ url: url, active: false }, function (tab) {
         if (tab && tab.id != null) { iyfParserTabs.set(tab.id, ep.index); }
@@ -138,19 +137,24 @@ function iyfOpenDownloader(ep) {
 }
 
 // 集完成信号(主动消息,根治 tab-close flake):下载页下完/失败各发一条消息,由 background 转到这里。
-// 结算即从 iyfParserTabs 删除该 tab,使随后的 onRemoved 兜底不再重复计。
-function iyfHandleEpisodeDone(index, tabId) {
-    if (tabId != null) { iyfParserTabs.delete(tabId); }
+// 幂等锚点 = iyfParserTabs:每个下载 tab 只结算一次。不在 map 里(已被 onRemoved 兜底结算过,
+// 或消息重复)就丢弃;集索引取 map 值,不信消息自带字段。
+function iyfHandleEpisodeDone(tabId) {
+    if (tabId == null || !iyfParserTabs.has(tabId)) { return; }
+    const i = iyfParserTabs.get(tabId);
+    iyfParserTabs.delete(tabId);
     if (!iyfJob) { return; }
-    IYF_JOB.markDone(iyfJob, index);
+    IYF_JOB.markDone(iyfJob, i);
     iyfSaveJob();
     iyfPump();
 }
 
-function iyfHandleEpisodeFailed(index, err, tabId) {
-    if (tabId != null) { iyfParserTabs.delete(tabId); }
+function iyfHandleEpisodeFailed(tabId, err) {
+    if (tabId == null || !iyfParserTabs.has(tabId)) { return; }
+    const i = iyfParserTabs.get(tabId);
+    iyfParserTabs.delete(tabId);
     if (!iyfJob) { return; }
-    iyfEpisodeFailed(index, err || 'download failed');
+    iyfEpisodeFailed(i, err || 'download failed');
 }
 
 // 兜底:下载 tab 意外关闭(崩溃/用户手动关)且未收到 done/fail 消息 = 该集失败。

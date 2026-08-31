@@ -594,13 +594,13 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
         iyfJobStateQuery().then(sendResponse);
         return true;
     }
-    // iyf 多集下载:下载页主动上报单集完成/失败(sender.tab.id 用于结算对应下载 tab)
+    // iyf 多集下载:下载页主动上报单集完成/失败(按 sender.tab.id 对 iyfParserTabs 结算,幂等)
     if (Message.Message == "iyfEpisodeDone") {
-        iyfHandleEpisodeDone(Message.index, sender.tab && sender.tab.id);
+        iyfHandleEpisodeDone(sender.tab && sender.tab.id);
         return false;
     }
     if (Message.Message == "iyfEpisodeFailed") {
-        iyfHandleEpisodeFailed(Message.index, Message.err, sender.tab && sender.tab.id);
+        iyfHandleEpisodeFailed(sender.tab && sender.tab.id, Message.err);
         return false;
     }
     if (Message.Message == "closeScript") {

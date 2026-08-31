@@ -1,7 +1,7 @@
 // iyf.tv 多集下载 —— 精简下载器页面脚本(跑在编排器新开的普通 tab,非 m3u8.js/service worker)
 // 数据流:orchestrator 签好 chunklist URL → 本页 fetch chunklist → 抽 ts URL 数组
 //   → 并发下载(ts 已自带 CDN 完整签名,直接 fetch,不拼参数)→ mux.js TS→MP4 remux
-//   → chrome.downloads.download 落盘 → 主动 sendMessage(iyfEpisodeDone/Failed) → window.close。
+//   → chrome.downloads.download 落盘并等 state=complete → 主动 sendMessage(iyfEpisodeDone/Failed) → window.close。
 // 依赖:lib/mux.min.js(提供全局 muxjs)先于本文件加载。
 // ponytail: 只服务 iyf 一种流(标准 media m3u8 + H264/AAC TS,无加密/无 init-segment/无 byteRange),
 //   故不搬 m3u8.downloader.js 整个 Downloader 类(pipeline/events/range 都用不上),就地写最小并发器。
@@ -166,10 +166,10 @@ function fixFileDuration(data, duration) {
     return data;
 }
 
-// ---- 完成信号:主动消息给编排器,再自关 ----
-function iyfReport(message, index, extra) {
+// ---- 完成信号:主动消息给编排器,再自关(编排器按 sender.tab.id 结算,无需带集索引)----
+function iyfReport(message, extra) {
     try {
-        chrome.runtime.sendMessage(Object.assign({ Message: message, index: index }, extra || {}));
+        chrome.runtime.sendMessage(Object.assign({ Message: message }, extra || {}));
     } catch (e) { /* SW 可能已休眠,重发无意义 */ }
 }
 
@@ -178,7 +178,6 @@ async function iyfDlMain() {
     const p = new URL(location.href).searchParams;
     const chunklistUrl = p.get('url');
     const filename = p.get('filename');
-    const index = parseInt(p.get('index'), 10);
     const status = document.getElementById('status');
     const setStatus = t => { if (status) { status.textContent = t; } };
 
@@ -200,19 +199,30 @@ async function iyfDlMain() {
         setStatus('落盘…');
         const blob = new Blob(mp4Buffers, { type: 'video/mp4' });
         const objUrl = URL.createObjectURL(blob);
+        // 等 downloads state=complete 才算完(同 m3u8.js:912 的 autoClose 时机):
+        // blob URL 属于本页,写盘未完就 window.close 会销毁 blob、掐断下载。
+        // 监听先挂、download 后发,不会漏事件。
         await new Promise((resolve, reject) => {
+            let downId = null;
+            chrome.downloads.onChanged.addListener(function (delta) {
+                if (delta.id !== downId || !delta.state) { return; }
+                if (delta.state.current === 'complete') { resolve(); }
+                else if (delta.state.current === 'interrupted') {
+                    reject(new Error('落盘中断:' + (delta.error ? delta.error.current : 'unknown')));
+                }
+            });
             chrome.downloads.download({ url: objUrl, filename: filename, saveAs: false }, id => {
                 if (chrome.runtime.lastError || !id) {
                     reject(new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : '下载未启动'));
-                } else { resolve(id); }
+                } else { downId = id; }
             });
         });
 
         setStatus('完成');
-        iyfReport('iyfEpisodeDone', index);
+        iyfReport('iyfEpisodeDone');
     } catch (e) {
         setStatus('失败:' + (e && e.message ? e.message : String(e)));
-        iyfReport('iyfEpisodeFailed', index, { err: e && e.message ? e.message : String(e) });
+        iyfReport('iyfEpisodeFailed', { err: e && e.message ? e.message : String(e) });
     } finally {
         // 给消息一点发送时间再自关(下完/失败都关,编排器已收到信号)
         setTimeout(() => window.close(), 800);
