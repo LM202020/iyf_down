@@ -21,7 +21,7 @@
 
 - [x] **T6 签名层**:`js/iyf-sign.js`——自带 blueimp `md5` + query 归一化(去 vv/pub、值 decodeURIComponent 且 `+`→空格、保序、整串 toLowerCase)+ `sign(query,pub,priv)→{vv,pub}` + node assert 自检(用侦察实证的 md5 测试向量)。UMD、不依赖 chrome。
   - 验收:`node js/iyf-sign.js` 自检通过,对侦察样本 query 算出的 vv 精确等于 `bba708cd5c5df95d5bc6cd1ef0a0ac23`。
-- [ ] **T7 取数层加签名 + 探针**:`js/iyf-api.js` 取数前经 MAIN world `fetch(location.href)` 读 `pConfig`(每会话缓存)、给 `languagesplaylist`/`video/play` URL 加签名;`js/iyf-orchestrator.js` 加启动签名探针(code:1 报「签名规则已变」中止)+ 拿到 m3u8 后签名并作 `tsAddArg` 传 openParser;background.js importScripts 加 `iyf-sign.js`。
+- [x] **T7 取数层加签名 + 探针**:`js/iyf-api.js` 取数前经 MAIN world `fetch(location.href)` 读 `pConfig`(每会话缓存)、给 `languagesplaylist`/`video/play` URL 加签名;`js/iyf-orchestrator.js` 加启动签名探针(code:1 报「签名规则已变」中止)+ 拿到 m3u8 后签名并作 `tsAddArg` 传 openParser;background.js importScripts 加 `iyf-sign.js`。
   - 验收:样本剧探针 `code:0`;`languagesplaylist` 返回 33 集;`video/play` 返回 576 档 m3u8。
 - [ ] **T8 端到端(吸收 T5)**:样本剧真落盘 3 集 mp4,`tsAddArg` 后缀生效使 ts 下载成功;确认 vv/pub 的 `encodeURIComponent` 坑、master/media 多层 m3u8 是否需分别签名。
   - 验收:3 个 mp4 落盘、命名 `这一秒过火/这一秒过火-第NN集.mp4` 零填充正确、大小合理、全程无弹框。

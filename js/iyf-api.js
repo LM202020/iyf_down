@@ -6,6 +6,53 @@
 // API 域名兜底:m10 拿不到时试 rankv21
 const IYF_API_HOSTS = ['m10.iyf.tv', 'rankv21.iyf.tv'];
 
+// 密钥对缓存:tabId -> {publicKey, privateKey}(单 job 单 tab,job 起始 iyfResetPConfig 清一次保新鲜)
+const iyfPConfigCache = new Map();
+
+// 纯函数:给一个 API/m3u8 URL 拼签名后缀。sign 归一化只认 vv/pub 以外的参数,故追加末尾即可。
+// vv 为十六进制、pub 为明文 publicKey(样本纯字母数字)→ 原样追加,不 encode(与站点一致)。
+function iyfSignUrl(url, publicKey, privateKey) {
+    const s = IYF_SIGN.sign(url, publicKey, privateKey);
+    return url + (url.indexOf('?') === -1 ? '?' : '&') + 'vv=' + s.vv + '&pub=' + s.pub;
+}
+
+// 注入到 MAIN world 读密钥对:在 iyf 页面上下文 fetch(location.href) 取播放页 HTML,正则抽 pConfig。
+// 序列化限制:不能引用任何外部闭包变量。拿不到返回 null。
+async function iyfMainReadPConfig() {
+    try {
+        const resp = await fetch(location.href, { credentials: 'include' });
+        const html = await resp.text();
+        const m = html.match(/"pConfig":\{"publicKey":"([^"]+)","privateKey":(\[[^\]]*\])\}/);
+        if (!m) { return null; }
+        return { publicKey: m[1], privateKey: JSON.parse(m[2]) };
+    } catch (e) { return null; }
+}
+
+// 读密钥对(每 tab 缓存一次)→ {ok, pConfig} | {ok:false, err}。拿不到 pConfig 直接报错,不做站点 fallback。
+async function iyfGetPConfig(tabId) {
+    if (!tabId) { return { ok: false, err: 'missing tabId' }; }
+    if (iyfPConfigCache.has(tabId)) { return { ok: true, pConfig: iyfPConfigCache.get(tabId) }; }
+    let res;
+    try {
+        res = await chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            world: 'MAIN',
+            func: iyfMainReadPConfig,
+        });
+    } catch (e) { return { ok: false, err: '读取密钥对失败:' + String(e) }; }
+    const pConfig = res && res[0] ? res[0].result : null;
+    if (!pConfig || !pConfig.publicKey || !Array.isArray(pConfig.privateKey) || !pConfig.privateKey.length) {
+        return { ok: false, err: '页面未含 pConfig 密钥对(签名规则或页面结构已变)' };
+    }
+    iyfPConfigCache.set(tabId, pConfig);
+    return { ok: true, pConfig: pConfig };
+}
+
+// 清一个 tab 的密钥对缓存(job 起始调,避免上次 job / 页面重载后的旧密钥被误判成「签名规则已变」)
+function iyfResetPConfig(tabId) {
+    iyfPConfigCache.delete(tabId);
+}
+
 // 注入到 MAIN world 的取数函数:依次试各 url,返回首个成功的 JSON;全失败返回 null。
 // executeScript 序列化限制:此函数不能引用任何外部闭包变量,一切走 args。
 async function iyfMainFetch(urls) {
@@ -33,10 +80,13 @@ async function iyfInjectFetch(tabId, urls) {
 // 拿全集列表 → {ok, episodes:[{key,name,index}], err?}
 async function iyfFetchPlayList(tabId, seriesKey) {
     if (!tabId || !seriesKey) { return { ok: false, err: 'missing tabId/seriesKey', episodes: [] }; }
+    const pc = await iyfGetPConfig(tabId);
+    if (!pc.ok) { return { ok: false, err: pc.err, episodes: [] }; }
     // ponytail: cid=0,1,4,146 等参数可能因剧而异——待端到端核实(能否从页面已有请求/全局拿真实参数)
     const vid = encodeURIComponent(seriesKey);
     const urls = IYF_API_HOSTS.map(function (h) {
-        return `https://${h}/v3/video/languagesplaylist?cinema=1&vid=${vid}&lsk=1&taxis=0&cid=0,1,4,146`;
+        const u = `https://${h}/v3/video/languagesplaylist?cinema=1&vid=${vid}&lsk=1&taxis=0&cid=0,1,4,146`;
+        return iyfSignUrl(u, pc.pConfig.publicKey, pc.pConfig.privateKey);
     });
     try {
         const json = await iyfInjectFetch(tabId, urls);
@@ -51,17 +101,36 @@ async function iyfFetchPlayList(tabId, seriesKey) {
 // 拿单集画质档+流地址 → {ok, clarity:[{title,description,bitrate,isVIP,isEnabled,downloadable,url}], err?}
 async function iyfFetchPlay(tabId, episodeKey) {
     if (!tabId || !episodeKey) { return { ok: false, err: 'missing tabId/episodeKey', clarity: [] }; }
-    // video/play 裸调:带 cookie、无需 vv/pub 签名
+    const pc = await iyfGetPConfig(tabId);
+    if (!pc.ok) { return { ok: false, err: pc.err, clarity: [] }; }
+    // video/play 需 vv/pub 签名(裸调返回 code:1 用户签名错误)
     const id = encodeURIComponent(episodeKey);
     const urls = IYF_API_HOSTS.map(function (h) {
-        return `https://${h}/v3/video/play?cinema=1&id=${id}&a=1&lang=none&usersign=1&device=1&isMasterSupport=1`;
+        const u = `https://${h}/v3/video/play?cinema=1&id=${id}&a=1&lang=none&usersign=1&device=1&isMasterSupport=1`;
+        return iyfSignUrl(u, pc.pConfig.publicKey, pc.pConfig.privateKey);
     });
     try {
         const json = await iyfInjectFetch(tabId, urls);
         const clarity = IYF.parsePlayInfo(json);
-        if (!clarity.length) { return { ok: false, err: 'empty clarity', clarity: [] }; }
-        return { ok: true, clarity: clarity };
+        // code 透传给启动探针判「签名规则已变」(code==1=用户签名错误)
+        const code = json && typeof json.code !== 'undefined' ? json.code : undefined;
+        if (!clarity.length) { return { ok: false, err: 'empty clarity', clarity: [], code: code }; }
+        return { ok: true, clarity: clarity, code: code };
     } catch (e) {
         return { ok: false, err: String(e), clarity: [] };
     }
+}
+
+// ---- 自检:node js/iyf-api.js 退出码 0 即通过(只测纯函数 iyfSignUrl,不依赖 chrome)----
+if (typeof require !== 'undefined' && require.main === module) {
+    const assert = require('assert');
+    global.IYF_SIGN = require('./iyf-sign.js');
+    // 站点真实向量(scratchpad verify_*.py 实证 getPaymentInfo):签名后缀拼接正确,vv 精确匹配站点
+    assert.strictEqual(
+        iyfSignUrl('https://m10.iyf.tv/api/payment/getPaymentInfo?isPromotion=3&region=DE', '1788194763980', ['vcrsion001']),
+        'https://m10.iyf.tv/api/payment/getPaymentInfo?isPromotion=3&region=DE&vv=b2491a91b01a7cb39595806efae8eebc&pub=1788194763980'
+    );
+    // 无 query 的 URL 用 ? 起头(m3u8 URL 兜底)
+    assert.strictEqual(iyfSignUrl('https://x/a', 'P', ['k']).indexOf('https://x/a?vv='), 0);
+    console.log('iyf-api self-check: all assertions passed');
 }

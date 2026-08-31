@@ -4,7 +4,7 @@
  * firefox 在 manifest 文件中已经加载以下脚本，如果已经加载 G 变量存在，不再加载。
  */
 if (typeof G === 'undefined') {
-    importScripts("/js/polyfill.js", "/js/function.js", "/js/templates.js", "/js/init.js", "/js/iyf-common.js", "/js/iyf-api.js", "/js/iyf-job.js", "/js/iyf-orchestrator.js");
+    importScripts("/js/polyfill.js", "/js/function.js", "/js/templates.js", "/js/init.js", "/js/iyf-common.js", "/js/iyf-sign.js", "/js/iyf-api.js", "/js/iyf-job.js", "/js/iyf-orchestrator.js");
 }
 
 // Service Worker 5分钟后会强制终止扩展

@@ -32,6 +32,13 @@ async function iyfStartJob(message) {
     if (iyfJob && !IYF_JOB.isFinished(iyfJob)) { return { ok: false, err: 'job already running' }; }
     const eps = Array.isArray(message.episodes) ? message.episodes : [];
     if (!message.tabId || !eps.length) { return { ok: false, err: 'missing tabId/episodes' }; }
+    // 启动签名探针:清旧密钥缓存 → 对第一集签名调一次 video/play。
+    // code==1(用户签名错误)=> 签名规则已变,中止不建 job;code==0 或有 clarity => 继续。
+    // pConfig 读取失败/网络失败 => 直接把 err 上抛,不建 job。
+    iyfResetPConfig(message.tabId);
+    const probe = await iyfFetchPlay(message.tabId, eps[0].key);
+    if (probe.code == 1) { return { ok: false, err: '签名规则已变,需更新签名模块' }; }
+    if (!probe.ok && probe.code != 0) { return { ok: false, err: probe.err || '签名探针失败' }; }
     // 并发上限:默认 3,可用 chrome.storage.local 的 iyfParallel 覆盖(无 options UI)
     const items = await chrome.storage.local.get({ iyfParallel: 3 });
     iyfJob = IYF_JOB.createJob({
@@ -89,6 +96,16 @@ async function iyfRunEpisode(i) {
         if (!res || !res.ok) { iyfEpisodeFailed(i, (res && res.err) || 'fetch play failed'); return; }
         const q = IYF.pickQuality(res.clarity, job.quality);
         if (!q) { iyfEpisodeFailed(i, 'no downloadable quality'); return; }
+        // 给 m3u8 URL 签名:签好的 URL 喂 openParser(hls.js 拉 playlist),
+        // 同一份 vv/pub 作 tsAddArg 供每个 ts 复用(实测 ts 共用同一 vv)。
+        // ⚠️ tsAddArg 的 vv/pub 值必须 encodeURIComponent:m3u8.js 会再 decode 一次,
+        //    否则 pub 里可能的 '+' 会被当空格破坏签名(§12.6)。
+        const pc = await iyfGetPConfig(iyfJobTabId);
+        if (job !== iyfJob) { return; }
+        if (!pc.ok) { iyfEpisodeFailed(i, pc.err); return; }
+        const sig = IYF_SIGN.sign(q.url, pc.pConfig.publicKey, pc.pConfig.privateKey);
+        const signedUrl = q.url + (q.url.indexOf('?') === -1 ? '?' : '&') + 'vv=' + sig.vv + '&pub=' + sig.pub;
+        const tsAddArg = 'vv=' + encodeURIComponent(sig.vv) + '&pub=' + encodeURIComponent(sig.pub);
         const title = IYF.sanitizeFilePart(job.seriesTitle) || job.seriesKey;
         const epName = `${title}-第${IYF.padEpisodeNo(ep.name)}集`;
         const filename = `${title}/${epName}.mp4`;
@@ -96,12 +113,12 @@ async function iyfRunEpisode(i) {
         IYF_JOB.markDownloading(job, i);
         iyfSaveJob();
         openParser({
-            url: q.url,
+            url: signedUrl,
             title: epName,
             downFileName: filename,
             tabId: iyfJobTabId,
             initiator: iyfJobInitiator,
-        }, { autoDown: true, autoClose: true });
+        }, { autoDown: true, autoClose: true, tsAddArg: tsAddArg });
     } catch (e) {
         if (job !== iyfJob) { return; }
         iyfEpisodeFailed(i, e);
