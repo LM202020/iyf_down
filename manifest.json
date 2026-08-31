@@ -18,7 +18,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "93",
   "name": "__MSG_catCatch__",
-  "homepage_url": "https://github.com/xifangczy/cat-catch",
+  "homepage_url": "https://github.com/LM202020/iyf_down",
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
