@@ -6,11 +6,11 @@
 
 ## 任务分解(有依赖,顺序执行)
 
-- [ ] **T1 基础层**:`js/iyf-common.js`——`IYF_HOSTS`、`isIyfHost(url)`、`parseSeriesKey(url)`、`cleanSeriesTitle(title)`、`expandEpisodeRange(sel,total)` 等纯函数 + `assert` 自检;popup 命中 iyf 域名才显示的空面板骨架。
+- [x] **T1 基础层**:`js/iyf-common.js`——`IYF_HOSTS`、`isIyfHost(url)`、`parseSeriesKey(url)`、`cleanSeriesTitle(title)`、`expandEpisodeRange(sel,total)` 等纯函数 + `assert` 自检;popup 命中 iyf 域名才显示的空面板骨架。
   - 验收:`node js/iyf-common.js` 自检通过;iyf 页面 popup 显示空面板、非 iyf 不显示。
-- [ ] **T2 API 客户端**:页面上下文取数——`languagesplaylist` 拿全集 `{key,name}`;`video/play?id=<key>` 拿 `clarity[]`+m3u8。经 `chrome.scripting.executeScript`(MAIN world)或消息通道,`credentials:include`。
+- [x] **T2 API 客户端**(代码已提交;实测验收待确认):页面上下文取数——`languagesplaylist` 拿全集 `{key,name}`;`video/play?id=<key>` 拿 `clarity[]`+m3u8。经 `chrome.scripting.executeScript`(MAIN world)或消息通道,`credentials:include`。
   - 验收:对样本剧返回 33 集列表 + 某集可用画质档与 m3u8。
-- [ ] **T3 编排器(background)**:`DownloadJob` 状态机——背压队列(默认 3,设置项)、集级重试 N 次、取消、状态存 `chrome.storage.session`;逐集选画质档→`openParser` 下载。纯逻辑(背压/重试/失败收集)TDD。
+- [x] **T3 编排器(background)**:`DownloadJob` 状态机——背压队列(默认 3,设置项)、集级重试 N 次、取消、状态存 `chrome.storage.session`;逐集选画质档→`openParser` 下载。纯逻辑(背压/重试/失败收集)TDD。
   - 验收:纯函数测试通过;能对选中集批量起下载 tab、遵守并发上限。
 - [ ] **T4 popup 面板 UI**:集列表(勾选/全选/区间)、画质下拉(动态按 `clarity` `isEnabled&&path`,默认最高可用)、下载/取消、集级状态。发 `startJob`/`cancelJob`,读回状态。
   - 验收:面板可选集/选画质/发起/取消/看到集级进度。
@@ -27,3 +27,5 @@
 
 ## 进度
 - 2026-08-31:计划建立。T1 已派 subagent。
+- 2026-08-31:T1 完成并提交(72a2e53),`node js/iyf-common.js` 自检通过。T2 完成并提交(cf3f0f3),对样本剧的实测验收(33 集列表+画质档)待确认。T3 已派 subagent。
+- 2026-08-31:T3 完成——`js/iyf-job.js`(状态机纯函数+自检)、`js/iyf-orchestrator.js`(胶水层),background 挂 `iyfStartJob`/`iyfCancelJob`/`iyfJobState` 三消息。已知妥协(代码内有 `ponytail:` 注):集完成信号=下载 tab 关闭(手动关 tab 误计完成;失败 tab 不自关则悬停靠取消收尾);worker 重启只恢复快照展示不续跑。供 T4 对接的消息形状见 iyf-orchestrator.js 注释。

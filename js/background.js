@@ -4,7 +4,7 @@
  * firefox 在 manifest 文件中已经加载以下脚本，如果已经加载 G 变量存在，不再加载。
  */
 if (typeof G === 'undefined') {
-    importScripts("/js/polyfill.js", "/js/function.js", "/js/templates.js", "/js/init.js", "/js/iyf-common.js", "/js/iyf-api.js");
+    importScripts("/js/polyfill.js", "/js/function.js", "/js/templates.js", "/js/init.js", "/js/iyf-common.js", "/js/iyf-api.js", "/js/iyf-job.js", "/js/iyf-orchestrator.js");
 }
 
 // Service Worker 5分钟后会强制终止扩展
@@ -577,6 +577,21 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
     // iyf 多集下载:在 tabId(iyf 页面)取单集画质档+流地址
     if (Message.Message == "iyfPlay") {
         iyfFetchPlay(Message.tabId, Message.episodeKey).then(sendResponse);
+        return true;
+    }
+    // iyf 多集下载:发起下载任务
+    if (Message.Message == "iyfStartJob") {
+        iyfStartJob(Message).then(sendResponse);
+        return true;
+    }
+    // iyf 多集下载:取消当前任务(不再推进新集,已开的下载 tab 不强杀)
+    if (Message.Message == "iyfCancelJob") {
+        sendResponse(iyfCancelJob());
+        return true;
+    }
+    // iyf 多集下载:查询当前任务快照(供 popup 渲染)
+    if (Message.Message == "iyfJobState") {
+        iyfJobStateQuery().then(sendResponse);
         return true;
     }
     if (Message.Message == "closeScript") {
