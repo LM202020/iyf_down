@@ -1,87 +1,32 @@
-<p align="center"> [中文] | [<a href="README_en.md">English</a>] | [<a href="README_es.md">Español</a>] | [<a href="README_ru.md">Русский</a>]</p>
-
 # 📑简介
 
-猫抓(cat-catch) 资源嗅探扩展，能够帮你筛选列出当前页面的资源。
+**iyf_down** —— 面向 iyf.tv（爱壹帆）连续剧的多集自动下载浏览器扩展。
 
-# 📖安装地址
+在 [xifangczy/cat-catch](https://github.com/xifangczy/cat-catch)（猫抓，Chrome MV3 资源嗅探扩展）底座上二次开发，新增 iyf.tv 整剧批量下载：popup 面板选集/选画质/看进度，逐集自动取流、下载切片、本地转封装为 mp4 落盘，无需第三方服务、无弹框。
 
-## 🐴Chrome
+# 📘安装方法（源码 / 已解压扩展）
 
-https://chromewebstore.google.com/detail/cat-catch/jfedfbgedapdagkghmgibemcoggfppbb
+1. `git clone` 本仓库。
+2. 打开 Chrome 扩展管理页面（`chrome://extensions`），启用「开发者模式」。
+3. 点击「加载已解压的扩展程序」，选中仓库根目录即可。
 
-## 🦄Edge
+日常开发无需构建：改完代码在扩展页刷新即可。要求 Chromium 内核 93 以上（完整功能建议 104+）。
 
-https://microsoftedge.microsoft.com/addons/detail/oohmdefbjalncfplafanlagojlakmjci
+# 📖使用
 
-## 🦊Firefox
-
-https://addons.mozilla.org/addon/cat-catch/ 😂需非国区IP访问
-
-## 📱Edge Android
-
-<img src="https://raw.githubusercontent.com/xifangczy/cat-catch/master/README/edgeqrcode.png" width="20%" />
-
-💔猫抓是开源的，任何人都可以下载修改上架到应用商店，已经有不少加上广告代码后上架的伪猫抓，请注意自己的数据安全。所有安装地址以github和用户文档为准。
-
-# 📒用户文档
-
-https://cat-catch.94cat.com/
-
-# 📘安装方法
-
-## 应用商店安装
-
-通过安装地址的链接到官方扩展商店即可安装。
-
-## 源码安装
-
-1. Git Clone 代码。
-2. 扩展管理页面 打开 "开发者模式"。
-3. 点击 "加载已解压的扩展程序" 选中扩展文件夹即可。
-
-## crx安装
-
-1. [Releases](https://github.com/xifangczy/cat-catch/releases) **右键另存为**下载crx文件。
-2. 扩展管理页面 打开 "开发者模式"。
-3. 将crx文件拖入扩展程序页面即可。
-
-# 📚兼容性说明
-
-1.0.17版本之后需要Chromium内核版本93以上。
-低于93请使用1.0.16版本。
-要体验完整功能，请使用104版本以上。
-
-# 🔍界面
-
-![popup界面](https://raw.githubusercontent.com/xifangczy/cat-catch/master/README/popup.png)
-![m3u8解析器界面](https://raw.githubusercontent.com/xifangczy/cat-catch/master/README/m3u8.png)
+在 iyf.tv 剧集播放页打开扩展 popup，面板会列出全部分集：勾选（支持全选/区间）、选画质、点下载。下载进度按集显示，可取消、可对失败集补下。文件命名为 `<剧名>/<剧名>-第NN集.mp4`。
 
 # 🤚🏻免责
 
 本扩展仅供下载用户拥有版权或已获授权的视频，禁止用于下载受版权保护且未经授权的内容。用户需自行承担使用本工具的全部法律责任，开发者不对用户的任何行为负责。本工具按“原样”提供，开发者不承担任何直接或间接责任。
 
-# 🚫版权保护与拒绝抓取声明
+# 🔒隐私
 
-我们尊重所有网站的内容版权和运营方的合法权益。
-如果您不允许本工具运行在您的网站上，请遵循以下流程向我们提交请求，我们将会把您的域名加入本项目的“避免抓取列表”中。
-
-- 在本仓库创建一个新的 Issue
-- Issue 标题请使用格式： `[Opt-Out Request] 您的网站域名`
-
-在 Issue 正文中，请提供以下信息以便我们核实：
-
-- 网站域名：（例如：`example.com`）
-- 联系人邮箱：（用于必要时核实身份）
-
-我们承诺在收到有效请求后，将在后续版本更新中尊重您的意愿。请注意，本项目是一个开源项目，更新和发布需要一定的周期。感谢您的理解与合作。
-
-# 🔒隐私政策
-
-本扩展收集所有信息都在本地储存处理，不会发送到远程服务器，不包含任何跟踪器。
+本扩展所有信息均在本地储存处理，不发送到远程服务器，不含任何跟踪器。
 
 # 💖鸣谢
 
+- [cat-catch](https://github.com/xifangczy/cat-catch)（本项目的底座）
 - [hls.js](https://github.com/video-dev/hls.js)
 - [jQuery](https://github.com/jquery/jquery)
 - [mux.js](https://github.com/videojs/mux.js)
@@ -93,10 +38,6 @@ https://cat-catch.94cat.com/
 
 # 📜License
 
-GPL-3.0 license
+GPL-3.0 license。
 
-1.0版 使用 MIT许可
-
-2.0版 更改为GPL v3许可
-
-为了资源嗅探扩展有良好发展，希望使用猫抓源码的扩展仍然保持开源。
+本项目二次开发自 [xifangczy/cat-catch](https://github.com/xifangczy/cat-catch)（GPL-3.0），依据 copyleft 条款保留原项目版权与 LICENSE，并同样以 GPL-3.0 开源。原项目 1.0 版采用 MIT、2.0 版起改为 GPL v3。

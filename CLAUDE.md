@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概况
 
-Fork 自 [xifangczy/cat-catch](https://github.com/xifangczy/cat-catch)（猫抓，Chrome MV3 资源嗅探扩展），在其底座上开发 **iyf.tv 连续剧多集自动下载模块**（分支 `feat/iyf-multi-download`，自用不分发）。纯 JS，无打包/转译步骤，仓库根目录可直接作为"已解压的扩展程序"加载调试。
+本仓库 **iyf_down** 是二次开发自 [xifangczy/cat-catch](https://github.com/xifangczy/cat-catch)（猫抓，Chrome MV3 资源嗅探扩展）的独立项目（非 fork，GPL-3.0 溯源保留见 LICENSE 与 README），在其底座上开发 **iyf.tv 连续剧多集自动下载模块**（分支 `feat/iyf-multi-download`，自用不分发）。纯 JS，无打包/转译步骤，仓库根目录可直接作为"已解压的扩展程序"加载调试。
 
 代码注释与文档使用中文。
 
