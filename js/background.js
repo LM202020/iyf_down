@@ -594,6 +594,15 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
         iyfJobStateQuery().then(sendResponse);
         return true;
     }
+    // iyf 多集下载:下载页主动上报单集完成/失败(sender.tab.id 用于结算对应下载 tab)
+    if (Message.Message == "iyfEpisodeDone") {
+        iyfHandleEpisodeDone(Message.index, sender.tab && sender.tab.id);
+        return false;
+    }
+    if (Message.Message == "iyfEpisodeFailed") {
+        iyfHandleEpisodeFailed(Message.index, Message.err, sender.tab && sender.tab.id);
+        return false;
+    }
     if (Message.Message == "closeScript") {
         if (!Message.script || !G.scriptList.has(Message.script)) {
             sendResponse("error");

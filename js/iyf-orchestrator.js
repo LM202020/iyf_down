@@ -1,8 +1,8 @@
 // iyf.tv 多集下载 —— background 编排器(chrome 胶水层)
 // 依赖加载顺序:iyf-common.js(IYF)、iyf-api.js(iyfFetchPlay)、iyf-job.js(IYF_JOB)先于本文件 importScripts。
 // 职责:收 iyfStartJob/iyfCancelJob/iyfJobState 消息(挂接在 background.js 消息分发),
-//       受背压逐集 iyfFetchPlay 取流 → pickQuality 选档 → openParser 开下载 tab,
-//       下载 tab 关闭(autoClose 下完自关)即视为该集结束。
+//       受背压逐集 iyfFetchPlay 取流 → pickQuality 选档 → 签名 → iyfOpenDownloader 开精简下载 tab(iyf-dl.html),
+//       该 tab 下完/失败主动 sendMessage(iyfEpisodeDone/Failed) 回报;tab 意外关闭且无消息为失败兜底。
 // ponytail: 同一时刻只跑一个 job;service worker 重启只恢复快照展示、不续跑(恢复时标记取消),要续跑再加。
 
 let iyfJob = null;              // 当前 job(内存态,快照同步写 storage)
@@ -109,16 +109,9 @@ async function iyfRunEpisode(i) {
         const title = IYF.sanitizeFilePart(job.seriesTitle) || job.seriesKey;
         const epName = `${title}-第${IYF.padEpisodeNo(ep.name)}集`;
         const filename = `${title}/${epName}.mp4`;
-        iyfWatchParserTab(filename, i);
         IYF_JOB.markDownloading(job, i);
         iyfSaveJob();
-        openParser({
-            url: signedUrl,
-            title: epName,
-            downFileName: filename,
-            tabId: iyfJobTabId,
-            initiator: iyfJobInitiator,
-        }, { autoDown: true, autoClose: true, forceLocal: 1 });
+        iyfOpenDownloader({ url: signedUrl, filename: filename, index: i });
     } catch (e) {
         if (job !== iyfJob) { return; }
         iyfEpisodeFailed(i, e);
@@ -131,32 +124,41 @@ function iyfEpisodeFailed(i, err) {
     iyfPump();
 }
 
-// 捕获 openParser 开出的下载 tab id:openParser 不回传 tab,靠 onCreated 按 filename 参数匹配。
-// filename 用与 openParser 相同的 URLSearchParams 编码,保证子串匹配确定命中。
-function iyfWatchParserTab(filename, epIndex) {
-    const marker = new URLSearchParams({ filename: filename }).toString();
-    const base = chrome.runtime.getURL('m3u8.html');
-    const listener = function (tab) {
-        const url = tab.pendingUrl || tab.url || '';
-        if (url.startsWith(base) && url.includes(marker)) {
-            chrome.tabs.onCreated.removeListener(listener);
-            clearTimeout(timer);
-            iyfParserTabs.set(tab.id, epIndex);
-        }
-    };
-    // ponytail: 10 秒没等到 tab 就撤监听防泄漏,该集会停在下载中,靠取消收尾;真遇到再加超时转失败
-    const timer = setTimeout(function () { chrome.tabs.onCreated.removeListener(listener); }, 10000);
-    chrome.tabs.onCreated.addListener(listener);
+// 开精简下载 tab(iyf-dl.html):签好的 chunklist URL、目标文件名、集索引经 query 传入。
+// tabs.create 回调直接拿 tab.id(不再靠 onCreated 猜),记入 iyfParserTabs 供完成信号/兜底核对。
+function iyfOpenDownloader(ep) {
+    const url = '/iyf-dl.html?' + new URLSearchParams({
+        url: ep.url,
+        filename: ep.filename,
+        index: String(ep.index),
+    }).toString();
+    chrome.tabs.create({ url: url, active: false }, function (tab) {
+        if (tab && tab.id != null) { iyfParserTabs.set(tab.id, ep.index); }
+    });
 }
 
-// 集完成信号:下载 tab 关闭(autoClose 下完自关)即视为该集结束
-// ponytail: 用户手动关 tab 也会计成完成,无法区分;要精确需改 m3u8.js 回报消息,本版不动核心
+// 集完成信号(主动消息,根治 tab-close flake):下载页下完/失败各发一条消息,由 background 转到这里。
+// 结算即从 iyfParserTabs 删除该 tab,使随后的 onRemoved 兜底不再重复计。
+function iyfHandleEpisodeDone(index, tabId) {
+    if (tabId != null) { iyfParserTabs.delete(tabId); }
+    if (!iyfJob) { return; }
+    IYF_JOB.markDone(iyfJob, index);
+    iyfSaveJob();
+    iyfPump();
+}
+
+function iyfHandleEpisodeFailed(index, err, tabId) {
+    if (tabId != null) { iyfParserTabs.delete(tabId); }
+    if (!iyfJob) { return; }
+    iyfEpisodeFailed(index, err || 'download failed');
+}
+
+// 兜底:下载 tab 意外关闭(崩溃/用户手动关)且未收到 done/fail 消息 = 该集失败。
+// 正常完成/失败时消息处理已把该 tab 从 map 删除,故这里只会命中「无消息就没了」的异常关闭。
 chrome.tabs.onRemoved.addListener(function (tabId) {
     if (!iyfParserTabs.has(tabId)) { return; }
     const i = iyfParserTabs.get(tabId);
     iyfParserTabs.delete(tabId);
     if (!iyfJob) { return; }
-    IYF_JOB.markDone(iyfJob, i);
-    iyfSaveJob();
-    iyfPump();
+    iyfEpisodeFailed(i, 'download tab closed unexpectedly');
 });

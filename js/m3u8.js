@@ -27,7 +27,6 @@ let currentIndex = 0;   // 本页面Index
 *   _taskId: 唯一任务ID
 **/
 const _ffmpeg = params.get("ffmpeg");   // 是否发送到 ffmpeg
-const _forceLocal = params.get("forceLocal");   // 存在时强制走本地 mux.js 合并,不发在线 ffmpeg(iyf 多集下载用)
 const _quantity = params.get("quantity");   // 同时下载的总数
 const _taskId = params.get("taskId");   // 任务id
 
@@ -153,9 +152,6 @@ function init() {
 
     // 发送到ffmpeg取消边下边存设置
     _ffmpeg && $("#StreamSaver").prop("checked", false);
-
-    // forceLocal:勾选 mp4 让本地 mux.js 做 TS→MP4 remux(否则 downSet.mp4 为默认 false,只是拼原始 TS)
-    _forceLocal && $("#mp4").prop("checked", true);
 
     // 存在密钥参数 自动填写密钥
     key && $("#customKey").val(key);
@@ -1829,8 +1825,8 @@ function mergeTsNew(down) {
         originalExt = fileName.pop();
         fileName = fileName.join(".");
     }
-    // 发送到ffmpeg(forceLocal 存在时无条件跳过,强制走下面的本地 apiDownload 分支)
-    if (!_forceLocal && ($("#ffmpeg").prop("checked") || _ffmpeg || isSendFfmpeg)) {
+    // 发送到ffmpeg
+    if ($("#ffmpeg").prop("checked") || _ffmpeg || isSendFfmpeg) {
         /**
          * 大于1.8G 不使用ffmpeg直接下载
          * chrome每个进程限制2G内存 处理2G视频可能导致超过限制。1.8G是安全值。
