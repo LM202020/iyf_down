@@ -31,3 +31,11 @@
 - 2026-08-31:T3 完成——`js/iyf-job.js`(状态机纯函数+自检)、`js/iyf-orchestrator.js`(胶水层),background 挂 `iyfStartJob`/`iyfCancelJob`/`iyfJobState` 三消息。已知妥协(代码内有 `ponytail:` 注):集完成信号=下载 tab 关闭(手动关 tab 误计完成;失败 tab 不自关则悬停靠取消收尾);worker 重启只恢复快照展示不续跑。供 T4 对接的消息形状见 iyf-orchestrator.js 注释。
 - 2026-08-31:T4 完成——`js/iyf-panel.js`(选择/进度双视图、区间勾选、画质下拉、取消、补下),popup.html/css 增量。顺带修 T1 bug:`#iyfPanel` 误带 `container` 类会错位 popup 的 tab 序号映射,已去掉。待 T5 端到端。
 - 2026-08-31:**T5 端到端失败——站点签名墙,非模块 bug。阻塞待用户就"决策 1"重新拍板。** 真实浏览器(headful,headless 被 CF 挡)加载扩展、注入、编排链路全通,但两道墙均需运行时 vv/pub 签名(硬约束禁绕过):①API 裸调回"用户签名错误"(证伪 §2 前提);②每个 .ts 分段也需 vv/pub,openParser 重发的请求不带签名 → 卡在 `0/215` 段。命名逻辑单独验证正确(`这一秒过火/这一秒过火-第01集.mp4` 零填充对)。三条路线:**(1)转 A 方案真播放嗅探**(复用猫抓 webRequest 抓 hls.js 已带签名的请求,不碰签名,最稳,但 T2/T3 取数层要大改)/(2)MAIN world 挂钩站点签名器给 URL 补签(脆,站点改即失效)/(3)暂缓。子 agent 与主 session 均推荐 (1)。次要缺口(被墙2掩盖,未修):`iyfRunEpisode` 调 openParser 未传 `requestHeaders`,缺 DNR 改 Referer 规则。**代码未 merge,分支 feat/iyf-multi-download 保留 T1–T4 成果待路线定夺。**
+- 2026-08-31:**签名逆向侦察完成(只读,实证 md5 精确匹配)。用户拍板走逆向重写。** 结论:
+  - `vv = md5(publicKey + "&" + 归一化query + "&" + privateKey[0])`,`pub = publicKey`。
+  - 归一化:去掉 vv/pub 两参 → 每值 decodeURIComponent 且 `+`→空格 → 保持原顺序 → 整串 toLowerCase;path 不参与,只签 query。
+  - 密钥对 `pConfig:{publicKey,privateKey:[...]}` 在 **play 页服务器返回的 HTML 内联 JSON** 里,每次页面加载换一对;扩展 `fetch(location.href)` 正则 `"pConfig":\{"publicKey":"([^"]+)","privateKey":(\[[^\]]*\])\}` 读一次即可。Fallback:cert 未加载时 `pub=Date.now()`、privateKey 用硬编码 8 元素数组、索引 `ts%8`。
+  - CDN 段**批量复用同一签名**:m3u8 签一次,每个 `media_N.ts` **照抄** m3u8 的 `&vv=...&pub=...` 后缀即可(这正是 T5 卡 `0/215` 的原因:openParser 重发 ts 没带后缀)。
+  - 站点签名器(Angular DI 服务 `uriSignature`/`get_query`)闭包私有、不挂 window,**形态 B(MAIN world 直接调)不可行**;**形态 A(md5 独立重写)推荐**,无 wasm/无动态密钥,难度易。
+  - 侦察脚本在 scratchpad(`verify_final.py`/`verify_vv.py`/`verify_cdn.py`/`sig_recon2.py`),含可复现测试向量。
+  - **待面谈拍板的实现分歧**:给每个 ts 拼 vv/pub 后缀这一步,如何在**不改猫抓核心 m3u8.js** 前提下落地(候选:自己 fetch+改写 playlist 后喂 openParser / DNR 动态给 ts 请求加 query / 其他)。走 `/grill-with-docs` 敲定后进入实现(改 T2 取数层加签名、新写签名纯函数模块 TDD)。
