@@ -853,6 +853,13 @@ const interval = setInterval(async function () {
         _type == "window" && $("#currentPage").show();
     }
 
+    // iyf 面板:命中镜像域名家族才显示(不影响猫抓原有逻辑)
+    chrome.tabs.get(G.tabId, function (tab) {
+        if (!chrome.runtime.lastError && tab && IYF.isIyfHost(tab.url)) {
+            $("#iyfPanel").removeClass("hide");
+        }
+    });
+
     // 获取页面DOM
     if (G.getHtmlDOM) {
         getPageDOM().then(dom => {
