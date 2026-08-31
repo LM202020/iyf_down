@@ -56,6 +56,7 @@ async function iyfStartJob(message) {
         iyfJobInitiator = (tab && tab.url) ? tab.url : '';
     } catch (e) { /* 拿不到就不带 referer */ }
     iyfParserTabs.clear();
+    iyfNextFetchAt = 0;   // 重置取数节流计时器,新 job 首集不受上个 job 残留延迟
     iyfSaveJob();
     iyfPump();
     return { ok: true, state: IYF_JOB.snapshot(iyfJob) };
@@ -86,11 +87,26 @@ function iyfPump() {
     iyfSaveJob();
 }
 
+// 取数节流:站点对短时并发 video/play 有「访问过量」频率风控(端到端实测:批量并发取数 →
+// 播放页被重定向 iyf.tv/challenge?triggerindex=访问过量 → 后续集 empty clarity)。
+// 逐集取数串成固定间隔的队列错开(下载走 CDN 不撞风控,不节流、并发照旧)。
+// ponytail: 3s 是经验值(站点未公开阈值);仍撞就调大,或改成撞风控退避重试。
+const IYF_FETCH_GAP_MS = 3000;
+let iyfNextFetchAt = 0;
+function iyfThrottleFetch() {
+    const now = Date.now();
+    const at = Math.max(now, iyfNextFetchAt);
+    iyfNextFetchAt = at + IYF_FETCH_GAP_MS;
+    return new Promise(function (r) { setTimeout(r, at - now); });
+}
+
 // 单集流程:取画质档 → 选档 → 开下载 tab
 async function iyfRunEpisode(i) {
     const job = iyfJob;
     const ep = job.episodes[i];
     try {
+        await iyfThrottleFetch();        // 取数前过节流闸,规避站点频率风控
+        if (job !== iyfJob) { return; }  // 排队期间 job 被取消/替换 → 丢弃
         const res = await iyfFetchPlay(iyfJobTabId, ep.key);
         if (job !== iyfJob) { return; } // job 已被替换,丢弃
         if (!res || !res.ok) { iyfEpisodeFailed(i, (res && res.err) || 'fetch play failed'); return; }
