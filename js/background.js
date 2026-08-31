@@ -4,7 +4,7 @@
  * firefox 在 manifest 文件中已经加载以下脚本，如果已经加载 G 变量存在，不再加载。
  */
 if (typeof G === 'undefined') {
-    importScripts("/js/polyfill.js", "/js/function.js", "/js/templates.js", "/js/init.js");
+    importScripts("/js/polyfill.js", "/js/function.js", "/js/templates.js", "/js/init.js", "/js/iyf-common.js", "/js/iyf-api.js");
 }
 
 // Service Worker 5分钟后会强制终止扩展
@@ -567,6 +567,16 @@ chrome.runtime.onMessage.addListener(function (Message, sender, sendResponse) {
     }
     if (Message.Message == "damnUrlHas") {
         sendResponse(G.damnUrlSet.has(Message.tabId));
+        return true;
+    }
+    // iyf 多集下载:在 tabId(iyf 页面)取全集列表
+    if (Message.Message == "iyfPlayList") {
+        iyfFetchPlayList(Message.tabId, Message.seriesKey).then(sendResponse);
+        return true;
+    }
+    // iyf 多集下载:在 tabId(iyf 页面)取单集画质档+流地址
+    if (Message.Message == "iyfPlay") {
+        iyfFetchPlay(Message.tabId, Message.episodeKey).then(sendResponse);
         return true;
     }
     if (Message.Message == "closeScript") {

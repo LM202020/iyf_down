@@ -90,6 +90,50 @@
         return String(s).replace(/[<>:"|?*~/\\]/g, '').replace(/\s+/g, ' ').trim();
     }
 
+    // 解析 v3/video/languagesplaylist 响应 → [{key,name,index}](0-based)。空/异常返回 []
+    function parsePlayList(json) {
+        const list = json && json.data && json.data.info && json.data.info[0] && json.data.info[0].playList;
+        if (!Array.isArray(list)) { return []; }
+        return list.map(function (it, i) {
+            return { key: it && it.key, name: it && it.name, index: i };
+        });
+    }
+
+    // 解析 v3/video/play 响应 clarity[] → 画质档数组。空/异常返回 []
+    // downloadable = isEnabled && path.result 存在;url = path.result
+    function parsePlayInfo(json) {
+        const list = json && json.data && json.data.info && json.data.info[0] && json.data.info[0].clarity;
+        if (!Array.isArray(list)) { return []; }
+        return list.map(function (c) {
+            c = c || {};
+            const url = c.path && c.path.result ? c.path.result : '';
+            return {
+                title: c.title,
+                description: c.description,
+                bitrate: c.bitrate,
+                isVIP: c.isVIP,
+                isEnabled: c.isEnabled,
+                downloadable: !!(c.isEnabled && url),
+                url: url,
+            };
+        });
+    }
+
+    // 从 parsePlayInfo 的档数组里选目标档:
+    // preferred(如 "1080")命中且可下就选它;否则选可下档里 bitrate 最高的;都不可下返回 null
+    function pickQuality(clarityList, preferred) {
+        if (!Array.isArray(clarityList)) { return null; }
+        const dl = clarityList.filter(function (c) { return c && c.downloadable; });
+        if (!dl.length) { return null; }
+        if (preferred) {
+            const hit = dl.find(function (c) { return c.title === preferred; });
+            if (hit) { return hit; }
+        }
+        return dl.reduce(function (best, c) {
+            return (c.bitrate || 0) > (best.bitrate || 0) ? c : best;
+        });
+    }
+
     return {
         IYF_HOSTS,
         isIyfHost,
@@ -98,6 +142,9 @@
         padEpisodeNo,
         expandEpisodeRange,
         sanitizeFilePart,
+        parsePlayList,
+        parsePlayInfo,
+        pickQuality,
     };
 });
 
@@ -150,6 +197,60 @@ if (typeof require !== 'undefined' && require.main === module) {
     assert.strictEqual(IYF.sanitizeFilePart('a/b:c*?"<>|~\\d'), 'abcd');
     assert.strictEqual(IYF.sanitizeFilePart('这一秒过火'), '这一秒过火');
     assert.strictEqual(IYF.sanitizeFilePart(null), '');
+
+    // ---- 解析层 fixture(照 design §11 真实响应结构造)----
+    // languagesplaylist:data.info[0].playList[] = [{id,key,name}]
+    const playlistJson = {
+        data: { info: [{ playList: [
+            { id: 111, key: 'EP01KEY', name: '01' },
+            { id: 112, key: 'EP02KEY', name: '02' },
+            { id: 113, key: 'EP03KEY', name: '03' },
+        ] }] }
+    };
+    assert.deepStrictEqual(IYF.parsePlayList(playlistJson), [
+        { key: 'EP01KEY', name: '01', index: 0 },
+        { key: 'EP02KEY', name: '02', index: 1 },
+        { key: 'EP03KEY', name: '03', index: 2 },
+    ]);
+    assert.deepStrictEqual(IYF.parsePlayList({}), []);
+    assert.deepStrictEqual(IYF.parsePlayList(null), []);
+    assert.deepStrictEqual(IYF.parsePlayList({ data: { info: [] } }), []);
+
+    // video/play:未登录样本——仅 576 可下,720/1080/4K 均 isVIP & isEnabled:false & path:null
+    const playJson = {
+        data: { info: [{ clarity: [
+            { bitrate: 800, title: '576', description: '标清', isVIP: false, isEnabled: true, path: { isHls: true, result: 'https://x.iyf.tv/576.m3u8' } },
+            { bitrate: 2000, title: '720', description: '高清', isVIP: true, isEnabled: false, path: null },
+            { bitrate: 4000, title: '1080', description: '蓝光', isVIP: true, isEnabled: false, path: null },
+            { bitrate: 8000, title: '4K', description: '超清', isVIP: true, isEnabled: false, path: null },
+        ] }] }
+    };
+    const clarity = IYF.parsePlayInfo(playJson);
+    assert.strictEqual(clarity.length, 4);
+    assert.deepStrictEqual(clarity[0], { title: '576', description: '标清', bitrate: 800, isVIP: false, isEnabled: true, downloadable: true, url: 'https://x.iyf.tv/576.m3u8' });
+    assert.strictEqual(clarity[2].downloadable, false);
+    assert.strictEqual(clarity[2].url, '');
+    assert.deepStrictEqual(IYF.parsePlayInfo({}), []);
+    assert.deepStrictEqual(IYF.parsePlayInfo(null), []);
+
+    // pickQuality:未登录只有 576 可下 → preferred 1080 落空退回最高可下(=576)
+    assert.strictEqual(IYF.pickQuality(clarity, '1080').title, '576');
+    assert.strictEqual(IYF.pickQuality(clarity, '576').title, '576');
+    assert.strictEqual(IYF.pickQuality(clarity).title, '576');
+    // 多档可下:preferred 命中选它;落空选 bitrate 最高
+    const multi = IYF.parsePlayInfo({ data: { info: [{ clarity: [
+        { bitrate: 800, title: '576', isEnabled: true, path: { result: 'a' } },
+        { bitrate: 4000, title: '1080', isEnabled: true, path: { result: 'b' } },
+    ] }] } });
+    assert.strictEqual(IYF.pickQuality(multi, '1080').title, '1080');
+    assert.strictEqual(IYF.pickQuality(multi, 'nope').title, '1080'); // 落空→最高
+    // 全不可下 → null
+    const noneDl = IYF.parsePlayInfo({ data: { info: [{ clarity: [
+        { title: '1080', isEnabled: false, path: null },
+    ] }] } });
+    assert.strictEqual(IYF.pickQuality(noneDl, '1080'), null);
+    assert.strictEqual(IYF.pickQuality([], '1080'), null);
+    assert.strictEqual(IYF.pickQuality(null, '1080'), null);
 
     console.log('iyf-common self-check: all assertions passed');
 }
