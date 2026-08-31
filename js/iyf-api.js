@@ -103,10 +103,12 @@ async function iyfFetchPlay(tabId, episodeKey) {
     if (!tabId || !episodeKey) { return { ok: false, err: 'missing tabId/episodeKey', clarity: [] }; }
     const pc = await iyfGetPConfig(tabId);
     if (!pc.ok) { return { ok: false, err: pc.err, clarity: [] }; }
-    // video/play 需 vv/pub 签名(裸调返回 code:1 用户签名错误)
+    // video/play 需 vv/pub 签名(裸调返回 code:1 用户签名错误)。
+    // a=0 表示按「具体分集 key」取流;a=1 是「系列聚合」模式,只认剧集页 key、对分集 key 返回「视频不存在」。
+    // 我们传的永远是 playList 里的分集 key,故必须 a=0(端到端实测:a=1 → 视频不存在)。
     const id = encodeURIComponent(episodeKey);
     const urls = IYF_API_HOSTS.map(function (h) {
-        const u = `https://${h}/v3/video/play?cinema=1&id=${id}&a=1&lang=none&usersign=1&device=1&isMasterSupport=1`;
+        const u = `https://${h}/v3/video/play?cinema=1&id=${id}&a=0&lang=none&usersign=1&device=1&isMasterSupport=1`;
         return iyfSignUrl(u, pc.pConfig.publicKey, pc.pConfig.privateKey);
     });
     try {

@@ -96,16 +96,16 @@ async function iyfRunEpisode(i) {
         if (!res || !res.ok) { iyfEpisodeFailed(i, (res && res.err) || 'fetch play failed'); return; }
         const q = IYF.pickQuality(res.clarity, job.quality);
         if (!q) { iyfEpisodeFailed(i, 'no downloadable quality'); return; }
-        // 给 m3u8 URL 签名:签好的 URL 喂 openParser(hls.js 拉 playlist),
-        // 同一份 vv/pub 作 tsAddArg 供每个 ts 复用(实测 ts 共用同一 vv)。
-        // ⚠️ tsAddArg 的 vv/pub 值必须 encodeURIComponent:m3u8.js 会再 decode 一次,
-        //    否则 pub 里可能的 '+' 会被当空格破坏签名(§12.6)。
+        // 给 chunklist(m3u8)URL 签名后喂 openParser。关键机制(端到端实测确认):
+        //   CDN 收到带 vv/pub 的 chunklist 请求后,会把这份 vv/pub 回填进返回体里每个 ts 的绝对 URL
+        //   (vendtime/vhash 等 CDN token 原样保留),m3u8.js 直接照用即可下成。
+        // 因此【不用 tsAddArg】:m3u8.js 的 tsAddArg 会用 RegExp("([^?]*)") 截掉 ts 原有 query、
+        //   只留 vv/pub,把 vendtime/vhash 冲掉 → CDN reset → 卡 0/215(这正是 T5 的真因)。
+        // 只要 chunklist 本身签好,ts 就自带完整签名,无需再动。
         const pc = await iyfGetPConfig(iyfJobTabId);
         if (job !== iyfJob) { return; }
         if (!pc.ok) { iyfEpisodeFailed(i, pc.err); return; }
-        const sig = IYF_SIGN.sign(q.url, pc.pConfig.publicKey, pc.pConfig.privateKey);
-        const signedUrl = q.url + (q.url.indexOf('?') === -1 ? '?' : '&') + 'vv=' + sig.vv + '&pub=' + sig.pub;
-        const tsAddArg = 'vv=' + encodeURIComponent(sig.vv) + '&pub=' + encodeURIComponent(sig.pub);
+        const signedUrl = iyfSignUrl(q.url, pc.pConfig.publicKey, pc.pConfig.privateKey);
         const title = IYF.sanitizeFilePart(job.seriesTitle) || job.seriesKey;
         const epName = `${title}-第${IYF.padEpisodeNo(ep.name)}集`;
         const filename = `${title}/${epName}.mp4`;
@@ -118,7 +118,7 @@ async function iyfRunEpisode(i) {
             downFileName: filename,
             tabId: iyfJobTabId,
             initiator: iyfJobInitiator,
-        }, { autoDown: true, autoClose: true, tsAddArg: tsAddArg });
+        }, { autoDown: true, autoClose: true, forceLocal: 1 });
     } catch (e) {
         if (job !== iyfJob) { return; }
         iyfEpisodeFailed(i, e);
