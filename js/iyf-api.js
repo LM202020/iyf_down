@@ -42,7 +42,7 @@ async function iyfGetPConfig(tabId) {
     } catch (e) { return { ok: false, err: '读取密钥对失败:' + String(e) }; }
     const pConfig = res && res[0] ? res[0].result : null;
     if (!pConfig || !pConfig.publicKey || !Array.isArray(pConfig.privateKey) || !pConfig.privateKey.length) {
-        return { ok: false, err: '页面未含 pConfig 密钥对(签名规则或页面结构已变)' };
+        return { ok: false, err: '未读到密钥对——请先登录 iyf 账号(未登录时页面不含 pConfig);若已登录仍失败,可能签名规则或页面结构已变' };
     }
     iyfPConfigCache.set(tabId, pConfig);
     return { ok: true, pConfig: pConfig };
@@ -90,6 +90,7 @@ async function iyfFetchPlayList(tabId, seriesKey) {
     });
     try {
         const json = await iyfInjectFetch(tabId, urls);
+        if (IYF.detectRateLimit(json)) { return { ok: false, err: 'iyf 访问过量(站点频率风控),请等几分钟再试', episodes: [], rateLimited: true }; }
         const episodes = IYF.parsePlayList(json);
         if (!episodes.length) { return { ok: false, err: 'empty playlist', episodes: [] }; }
         return { ok: true, episodes: episodes };
@@ -113,6 +114,8 @@ async function iyfFetchPlay(tabId, episodeKey) {
     });
     try {
         const json = await iyfInjectFetch(tabId, urls);
+        // 频率风控优先识别(data.code==5/访问过量):给「稍后再试」友好提示,不误导成 empty clarity
+        if (IYF.detectRateLimit(json)) { return { ok: false, err: 'iyf 访问过量(站点频率风控),请等几分钟再试', clarity: [], rateLimited: true }; }
         const clarity = IYF.parsePlayInfo(json);
         // code 透传给启动探针判「签名规则已变」(code==1=用户签名错误)
         const code = json && typeof json.code !== 'undefined' ? json.code : undefined;

@@ -37,6 +37,7 @@ async function iyfStartJob(message) {
     // pConfig 读取失败/网络失败 => 直接把 err 上抛,不建 job。
     iyfResetPConfig(message.tabId);
     const probe = await iyfFetchPlay(message.tabId, eps[0].key);
+    if (probe.rateLimited) { return { ok: false, err: probe.err }; } // 访问过量:透传友好提示,别当签名/结构问题
     if (probe.code == 1) { return { ok: false, err: '签名规则已变,需更新签名模块' }; }
     if (!probe.ok && probe.code != 0) { return { ok: false, err: probe.err || '签名探针失败' }; }
     // 并发上限:默认 3,可用 chrome.storage.local 的 iyfParallel 覆盖(无 options UI)

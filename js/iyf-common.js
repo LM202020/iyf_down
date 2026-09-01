@@ -134,6 +134,25 @@
         });
     }
 
+    // iyf 页面"当前页面"资源列表噪音判定:iyf 播放页正片是 HLS/DASH,真正能下成一集的入口是
+    // m3u8/mpd playlist;占位/广告 mp4(如 empty2.mp4)、裸 ts 分片、图片、json 等对用户是噪音。
+    // 返回 true = 该条应在"当前页面"列表隐藏。只认 iyf 域名资源(靠 data.webUrl),非 iyf 页面一律
+    // false,绝不影响猫抓在其它站点的原有列表。ponytail: 只留 playlist 是最贴合"只看真正剧集"的白名单;
+    // 万一某剧正片是裸 mp4(iyf 实测均 HLS,暂无此例)再放宽。
+    function isEpisodeNoise(data) {
+        if (!data || !isIyfHost(data.webUrl)) { return false; }
+        return data.parsing !== 'm3u8' && data.parsing !== 'mpd';
+    }
+
+    // 站点频率风控判定:languagesplaylist/video/play 短时高频会被限,响应体 data.code==5 且 data.msg="访问过量"
+    // (实测原文 {"data":{"code":5,"info":[],"msg":"访问过量"},"ret":200})。命中即返回 true,让上层给「稍后再试」友好提示,
+    // 而非误导成 empty clarity / 签名规则已变。
+    function detectRateLimit(json) {
+        const d = json && json.data;
+        if (!d) { return false; }
+        return d.code === 5 || (typeof d.msg === 'string' && d.msg.indexOf('访问过量') !== -1);
+    }
+
     return {
         IYF_HOSTS,
         isIyfHost,
@@ -145,6 +164,8 @@
         parsePlayList,
         parsePlayInfo,
         pickQuality,
+        isEpisodeNoise,
+        detectRateLimit,
     };
 });
 
@@ -251,6 +272,25 @@ if (typeof require !== 'undefined' && require.main === module) {
     assert.strictEqual(IYF.pickQuality(noneDl, '1080'), null);
     assert.strictEqual(IYF.pickQuality([], '1080'), null);
     assert.strictEqual(IYF.pickQuality(null, '1080'), null);
+
+    // isEpisodeNoise:iyf 页面只留 m3u8/mpd,滤掉其余;非 iyf 页面/无 webUrl 一律不滤
+    const iyfPage = 'https://www.iyf.tv/play/ABC';
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: 'm3u8' }), false); // 正片 playlist 保留
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: 'mpd' }), false);
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: false }), true);   // empty2.mp4/裸 ts 隐藏
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: 'json' }), true);
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: 'https://youtube.com/x', parsing: false }), false); // 非 iyf 不滤
+    assert.strictEqual(IYF.isEpisodeNoise({ parsing: false }), false); // 无 webUrl 不滤
+    assert.strictEqual(IYF.isEpisodeNoise(null), false);
+
+    // detectRateLimit:data.code==5 或 msg 含"访问过量"→ true;正常响应/空 → false
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 5, info: [], msg: '访问过量' } }), true);
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 0, msg: '访问过量' } }), true); // 只看 msg 也算
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 5 } }), true);
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 0, info: [{ clarity: [] }] } }), false);
+    assert.strictEqual(IYF.detectRateLimit({ data: {} }), false);
+    assert.strictEqual(IYF.detectRateLimit({}), false);
+    assert.strictEqual(IYF.detectRateLimit(null), false);
 
     console.log('iyf-common self-check: all assertions passed');
 }
