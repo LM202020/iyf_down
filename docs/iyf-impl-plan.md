@@ -37,7 +37,8 @@
     **【2026-09-01 两项均已解决,①的归因是错的】**:①「访问过量」不是频率限制,是**没带账号凭证**的拒绝话术
     (决定性对照见下方 2026-09-01 进度);补上凭证后多集连续取数无阻。②改用 `chrome.downloads.search`
     读真实落盘路径(Playwright 会劫持下载改名),命名 `剧名/剧名-第NN集.mp4` 已实测正确。
-- 验收证据:`scratchpad/downloads_plan2/*.mp4`(01 集,勿删)。
+- ~~验收证据:`scratchpad/downloads_plan2/*.mp4`(01 集,勿删)。~~ 已清理——scratchpad 是易失的
+  session 临时目录,不适合存"勿删"证据;且该轮结论已被 2026-09-01 的 1080/4K 端到端全面取代(见下)。
 
 ## 关键常量/事实(供各 subagent)
 - `IYF_HOSTS = [iyf.tv, aiyifan.tv, dnvod.tv, ifsp.tv, jssp.tv, kubb.tv, lgsp.tv, flyv.tv]`
