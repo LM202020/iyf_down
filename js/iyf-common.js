@@ -144,9 +144,11 @@
         return data.parsing !== 'm3u8' && data.parsing !== 'mpd';
     }
 
-    // 站点频率风控判定:languagesplaylist/video/play 短时高频会被限,响应体 data.code==5 且 data.msg="访问过量"
-    // (实测原文 {"data":{"code":5,"info":[],"msg":"访问过量"},"ret":200})。命中即返回 true,让上层给「稍后再试」友好提示,
-    // 而非误导成 empty clarity / 签名规则已变。
+    // 站点「访问过量」判定:响应体 data.code==5 且 data.msg="访问过量"
+    // (实测原文 {"data":{"code":5,"info":[],"msg":"访问过量"},"ret":200})。
+    // 真机对照实证(2026-09-01):这不是频率限制——同一时刻同一接口,带账号凭证调回「用户签名错误」、
+    // 只带 vv/pub(游客签名)才回「访问过量」,故它是「拿游客签名要登录内容」的拒绝话术。
+    // 命中即返回 true,上层提示重新登录,而非误导成 empty clarity / 签名规则已变。
     function detectRateLimit(json) {
         const d = json && json.data;
         if (!d) { return false; }

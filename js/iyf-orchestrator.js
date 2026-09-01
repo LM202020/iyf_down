@@ -36,6 +36,7 @@ async function iyfStartJob(message) {
     // code==1(用户签名错误)=> 签名规则已变,中止不建 job;code==0 或有 clarity => 继续。
     // pConfig 读取失败/网络失败 => 直接把 err 上抛,不建 job。
     iyfResetPConfig(message.tabId);
+    iyfResetAuth(message.tabId);   // 登录凭证也重读,避免换账号/重登后用旧凭证
     const probe = await iyfFetchPlay(message.tabId, eps[0].key);
     if (probe.rateLimited) { return { ok: false, err: probe.err }; } // 访问过量:透传友好提示,别当签名/结构问题
     if (probe.code == 1) { return { ok: false, err: '签名规则已变,需更新签名模块' }; }
