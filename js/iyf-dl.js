@@ -98,8 +98,11 @@ function iyfRemux(buffers, totalDuration) {
     const out = [];
     let head = true;
     let tempBuffer = null;
+    let sawVideo = false;
     const transmuxer = new muxjs.mp4.Transmuxer({ keepOriginalTimestamps: false, remux: true });
     transmuxer.on('data', function (segment) {
+        // mux.js 只认 H.264;遇到 H.265/HEVC 只会吐音频轨,必须显式报错而不是产出纯音频坏文件
+        if (segment.type === 'video' || segment.type === 'combined') { sawVideo = true; }
         if (head) {
             const data = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
             data.set(segment.initSegment, 0);
@@ -117,6 +120,7 @@ function iyfRemux(buffers, totalDuration) {
         if (tempBuffer) { out.push(tempBuffer); }
     }
     if (!out.length) { throw new Error('mux.js 未产出任何 mp4 数据'); }
+    if (!sawVideo) { throw new Error('转封装未产出视频轨——该画质为 H.265/HEVC(mux.js 不支持),请改选 1080 或更低画质'); }
     return out;
 }
 

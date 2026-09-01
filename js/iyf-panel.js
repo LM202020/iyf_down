@@ -70,14 +70,14 @@
         const list = (res && res.ok && Array.isArray(res.clarity) ? res.clarity : [])
             .filter(function (c) { return c && c.downloadable; });
         if (!list.length) { $q.prop("disabled", true); return; }
+        const isHevc = function (c) { return c.title === "2160" || c.title === "4K"; };
         list.forEach(function (c) {
-            const label = c.title + (c.description ? " " + c.description : "") + (c.isVIP ? " [VIP]" : "");
+            const label = c.title + (c.description ? " " + c.description : "") + (isHevc(c) ? " [H.265 暂不支持]" : "");
             $q.append($("<option></option>").val(c.title).text(label));
         });
-        // 默认选最高的【非 VIP】档:非会员请求 VIP 档,CDN 返回的是纯音频受限内容(真机实测),
-        // 会下出没有视频轨的坏文件,故不能拿 VIP 档当默认;全是 VIP 档时才退回最高档。
-        const free = list.filter(function (c) { return !c.isVIP; });
-        const pool = free.length ? free : list;
+        // 默认选最高的 H.264 档(=1080):2160 是 H.265/HEVC,mux.js 转封装丢视频轨、只出纯音频(真机实测)
+        const usable = list.filter(function (c) { return !isHevc(c); });
+        const pool = usable.length ? usable : list;
         const best = pool.reduce(function (a, c) { return (c.bitrate || 0) > (a.bitrate || 0) ? c : a; });
         $q.val(best.title);
     }

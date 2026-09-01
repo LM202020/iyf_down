@@ -119,12 +119,15 @@
         });
     }
 
+    // mux.js 只支持 H.264+AAC。真机实测(2026-09-01,ffprobe 实拉切片):
+    //   576=h264 896x504 / 720=h264 1280x720 / 1080=h264 1920x1080 / 2160=hevc 3840x2160
+    // 2160 是 H.265(HEVC),mux.js 转封装会丢掉视频轨、只剩音频(下出 28MB 纯音频坏文件),
+    // 故默认选最高的【非 HEVC】档(=1080)。与 VIP 无关——会员账号同样如此。
+    const IYF_HEVC_TITLES = ['2160', '4K'];
+
     // 从 parsePlayInfo 的档数组里选目标档:
-    // preferred(如 "1080")命中且可下就选它——用户明确指定时允许 VIP 档;
-    // 否则只在【非 VIP 档】里选 bitrate 最高的。
-    // 承重理由(2026-09-01 真机实测):非会员请求 VIP 档,CDN 不报错而是返回受限内容——
-    // 纯音频无视频轨、且各集返回同一段(两集时长精确同为 1188.048980s),下出来是坏文件。
-    // 故 VIP 档绝不能当默认;没有任何免费档时才退回全集合(交由用户从面板判断)。
+    // preferred(如 "1080")命中且可下就选它(用户明确指定 2160 也给,由下载端在转封装时报错提示);
+    // 否则在可转封装的档里选 bitrate 最高的;都不可下返回 null。
     function pickQuality(clarityList, preferred) {
         if (!Array.isArray(clarityList)) { return null; }
         const dl = clarityList.filter(function (c) { return c && c.downloadable; });
@@ -133,8 +136,8 @@
             const hit = dl.find(function (c) { return c.title === preferred; });
             if (hit) { return hit; }
         }
-        const free = dl.filter(function (c) { return !c.isVIP; });
-        const pool = free.length ? free : dl;
+        const usable = dl.filter(function (c) { return IYF_HEVC_TITLES.indexOf(c.title) === -1; });
+        const pool = usable.length ? usable : dl;
         return pool.reduce(function (best, c) {
             return (c.bitrate || 0) > (best.bitrate || 0) ? c : best;
         });
@@ -273,19 +276,20 @@ if (typeof require !== 'undefined' && require.main === module) {
     ] }] } });
     assert.strictEqual(IYF.pickQuality(multi, '1080').title, '1080');
     assert.strictEqual(IYF.pickQuality(multi, 'nope').title, '1080'); // 落空→最高
-    // VIP 档不当默认(真机:非会员拿 VIP 档会得到纯音频受限内容)——默认选最高的免费档
-    const vipMix = IYF.parsePlayInfo({ data: { info: [{ clarity: [
-        { bitrate: 9000, title: '2160', isVIP: true, isEnabled: true, path: { result: 'vip4k' } },
-        { bitrate: 4000, title: '1080', isVIP: true, isEnabled: true, path: { result: 'vip1080' } },
-        { bitrate: 800, title: '576', isVIP: false, isEnabled: true, path: { result: 'free576' } },
+    // HEVC(2160)不当默认:mux.js 不支持 H.265,转封装会丢视频轨 → 默认选最高的 H.264 档(1080)
+    const tiers = IYF.parsePlayInfo({ data: { info: [{ clarity: [
+        { bitrate: 9000, title: '2160', isVIP: true, isEnabled: true, path: { result: 'hevc4k' } },
+        { bitrate: 4000, title: '1080', isVIP: true, isEnabled: true, path: { result: 'h264_1080' } },
+        { bitrate: 800, title: '576', isVIP: false, isEnabled: true, path: { result: 'h264_576' } },
     ] }] } });
-    assert.strictEqual(IYF.pickQuality(vipMix).title, '576');            // 默认跳过 VIP 档
-    assert.strictEqual(IYF.pickQuality(vipMix, '1080').title, '1080');   // 用户明确指定才给 VIP 档
-    // 全是 VIP 档时退回全集合(交用户判断),不至于什么都下不了
-    const allVip = IYF.parsePlayInfo({ data: { info: [{ clarity: [
-        { bitrate: 4000, title: '1080', isVIP: true, isEnabled: true, path: { result: 'v' } },
+    assert.strictEqual(IYF.pickQuality(tiers).title, '1080');          // 默认跳过 HEVC,取最高 H.264
+    assert.strictEqual(IYF.pickQuality(tiers, '2160').title, '2160');  // 用户明确指定 HEVC 仍给
+    assert.strictEqual(IYF.pickQuality(tiers, '576').title, '576');
+    // 只有 HEVC 档时退回它(转封装阶段会明确报错,而不是这里静默什么都不给)
+    const onlyHevc = IYF.parsePlayInfo({ data: { info: [{ clarity: [
+        { bitrate: 9000, title: '2160', isEnabled: true, path: { result: 'h' } },
     ] }] } });
-    assert.strictEqual(IYF.pickQuality(allVip).title, '1080');
+    assert.strictEqual(IYF.pickQuality(onlyHevc).title, '2160');
 
     // 全不可下 → null
     const noneDl = IYF.parsePlayInfo({ data: { info: [{ clarity: [
