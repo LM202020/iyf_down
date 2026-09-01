@@ -166,66 +166,45 @@ function fixFileDuration(data, duration) {
     return data;
 }
 
-// ---- 完成信号:主动消息给编排器,再自关(编排器按 sender.tab.id 结算,无需带集索引)----
-function iyfReport(message, extra) {
+// ---- 上报:进度/完成/失败都带 index(offscreen 单例内多集并行,靠 index 区分,不再有 tabId)----
+function iyfReport(message, index, extra) {
     try {
-        chrome.runtime.sendMessage(Object.assign({ Message: message }, extra || {}));
+        chrome.runtime.sendMessage(Object.assign({ Message: message, index: index }, extra || {}));
     } catch (e) { /* SW 可能已休眠,重发无意义 */ }
 }
 
-// ---- 主流程 ----
-async function iyfDlMain() {
-    const p = new URL(location.href).searchParams;
-    const chunklistUrl = p.get('url');
-    const filename = p.get('filename');
-    const status = document.getElementById('status');
-    const setStatus = t => { if (status) { status.textContent = t; } };
-
+// ---- 单集下载任务(offscreen 单例内多集并行,互不阻塞)----
+// offscreen 文档拿不到 chrome.downloads,故转封装完把 blob URL 交给 background 落盘;
+// 落盘成功/中断由 background 判定并回报,blob 也由它通知本页 revoke。
+async function iyfDlTask(task) {
+    const index = task && task.index;
     try {
-        if (!chunklistUrl || !filename) { throw new Error('缺少 url/filename 参数'); }
-        setStatus('拉取 chunklist…');
-        const resp = await fetch(chunklistUrl);
+        if (!task || !task.url || !task.filename) { throw new Error('缺少 url/filename'); }
+        const resp = await fetch(task.url);
         if (!resp.ok) { throw new Error('chunklist HTTP ' + resp.status); }
         const text = await resp.text();
-        const { urls, durations } = iyfParseChunklist(text, chunklistUrl);
+        const { urls, durations } = iyfParseChunklist(text, task.url);
         const totalDuration = durations.reduce((a, b) => a + b, 0);
 
-        setStatus('下载切片 0/' + urls.length);
-        const buffers = await iyfDownloadAll(urls, (done, total) => setStatus('下载切片 ' + done + '/' + total));
-
-        setStatus('转封装 MP4…');
-        const mp4Buffers = iyfRemux(buffers, totalDuration);
-
-        setStatus('落盘…');
-        const blob = new Blob(mp4Buffers, { type: 'video/mp4' });
-        const objUrl = URL.createObjectURL(blob);
-        // 等 downloads state=complete 才算完(同 m3u8.js:912 的 autoClose 时机):
-        // blob URL 属于本页,写盘未完就 window.close 会销毁 blob、掐断下载。
-        // 监听先挂、download 后发,不会漏事件。
-        await new Promise((resolve, reject) => {
-            let downId = null;
-            chrome.downloads.onChanged.addListener(function (delta) {
-                if (delta.id !== downId || !delta.state) { return; }
-                if (delta.state.current === 'complete') { resolve(); }
-                else if (delta.state.current === 'interrupted') {
-                    reject(new Error('落盘中断:' + (delta.error ? delta.error.current : 'unknown')));
-                }
-            });
-            chrome.downloads.download({ url: objUrl, filename: filename, saveAs: false }, id => {
-                if (chrome.runtime.lastError || !id) {
-                    reject(new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : '下载未启动'));
-                } else { downId = id; }
-            });
+        iyfReport('iyfEpisodeProgress', index, { done: 0, total: urls.length, phase: 'download' });
+        // 上报限流:每约 1/40 或至少 3 片报一次,避免消息风暴拖慢下载
+        const step = Math.max(3, Math.floor(urls.length / 40));
+        let last = 0;
+        const buffers = await iyfDownloadAll(urls, function (done, total) {
+            if (done === total || done - last >= step) {
+                last = done;
+                iyfReport('iyfEpisodeProgress', index, { done: done, total: total, phase: 'download' });
+            }
         });
 
-        setStatus('完成');
-        iyfReport('iyfEpisodeDone');
+        iyfReport('iyfEpisodeProgress', index, { done: urls.length, total: urls.length, phase: 'remux' });
+        const mp4Buffers = iyfRemux(buffers, totalDuration);
+
+        const objUrl = URL.createObjectURL(new Blob(mp4Buffers, { type: 'video/mp4' }));
+        iyfReport('iyfEpisodeProgress', index, { done: urls.length, total: urls.length, phase: 'save' });
+        iyfReport('iyfEpisodeBlob', index, { blobUrl: objUrl, filename: task.filename });
     } catch (e) {
-        setStatus('失败:' + (e && e.message ? e.message : String(e)));
-        iyfReport('iyfEpisodeFailed', { err: e && e.message ? e.message : String(e) });
-    } finally {
-        // 给消息一点发送时间再自关(下完/失败都关,编排器已收到信号)
-        setTimeout(() => window.close(), 800);
+        iyfReport('iyfEpisodeFailed', index, { err: e && e.message ? e.message : String(e) });
     }
 }
 
@@ -259,7 +238,15 @@ if (typeof window === 'undefined' && typeof require !== 'undefined' && require.m
     console.log('iyf-dl self-check: all assertions passed');
 }
 
-// 页面环境才跑主流程
-if (typeof window !== 'undefined') {
-    window.addEventListener('DOMContentLoaded', iyfDlMain);
+// ---- 消息驱动:编排器派任务就并行开跑;落盘完成后按通知回收 blob ----
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener(function (msg) {
+        if (!msg) { return false; }
+        if (msg.Message === 'iyfDlStart' && msg.task) {
+            iyfDlTask(msg.task);   // 不 await:多集并行下载
+        } else if (msg.Message === 'iyfDlRevoke' && msg.blobUrl) {
+            try { URL.revokeObjectURL(msg.blobUrl); } catch (e) { /* 已回收 */ }
+        }
+        return false;
+    });
 }

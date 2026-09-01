@@ -1,14 +1,14 @@
 // iyf.tv 多集下载 —— background 编排器(chrome 胶水层)
 // 依赖加载顺序:iyf-common.js(IYF)、iyf-api.js(iyfFetchPlay)、iyf-job.js(IYF_JOB)先于本文件 importScripts。
 // 职责:收 iyfStartJob/iyfCancelJob/iyfJobState 消息(挂接在 background.js 消息分发),
-//       受背压逐集 iyfFetchPlay 取流 → pickQuality 选档 → 签名 → iyfOpenDownloader 开精简下载 tab(iyf-dl.html),
-//       该 tab 下完/失败主动 sendMessage(iyfEpisodeDone/Failed) 回报;tab 意外关闭且无消息为失败兜底。
+//       受背压逐集 iyfFetchPlay 取流 → pickQuality 选档 → 签名 → iyfDispatchDownload 派给 offscreen
+//       单例文档(iyf-dl.html,不占标签栏)并行下载;它上报进度/交 blob,由本层落盘并按集索引结算。
 // ponytail: 同一时刻只跑一个 job;service worker 重启只恢复快照展示、不续跑(恢复时标记取消),要续跑再加。
 
 let iyfJob = null;              // 当前 job(内存态,快照同步写 storage)
 let iyfJobTabId = null;         // 发起 job 的 iyf 页面 tabId(注入取数用)
 let iyfJobInitiator = '';       // iyf 页面 url,传给解析器做 referer
-const iyfParserTabs = new Map();    // 下载 tab id -> 集索引
+// 下载跑在 offscreen 单例文档里(不占标签栏),集与集靠 index 区分,不再需要 tab 映射
 
 const iyfStorage = chrome.storage.session ?? chrome.storage.local;
 
@@ -57,7 +57,6 @@ async function iyfStartJob(message) {
         const tab = await chrome.tabs.get(message.tabId);
         iyfJobInitiator = (tab && tab.url) ? tab.url : '';
     } catch (e) { /* 拿不到就不带 referer */ }
-    iyfParserTabs.clear();
     iyfNextFetchAt = 0;   // 重置取数节流计时器,新 job 首集不受上个 job 残留延迟
     iyfSaveJob();
     iyfPump();
@@ -129,7 +128,7 @@ async function iyfRunEpisode(i) {
         const filename = `${title}/${epName}.mp4`;
         IYF_JOB.markDownloading(job, i);
         iyfSaveJob();
-        iyfOpenDownloader({ url: signedUrl, filename: filename, index: i });
+        iyfDispatchDownload({ url: signedUrl, filename: filename, index: i });
     } catch (e) {
         if (job !== iyfJob) { return; }
         iyfEpisodeFailed(i, e);
@@ -142,45 +141,82 @@ function iyfEpisodeFailed(i, err) {
     iyfPump();
 }
 
-// 开精简下载 tab(iyf-dl.html):签好的 chunklist URL、目标文件名经 query 传入。
-// tabs.create 回调直接拿 tab.id(不再靠 onCreated 猜),记入 iyfParserTabs 供完成信号/兜底核对。
-function iyfOpenDownloader(ep) {
-    const url = '/iyf-dl.html?' + new URLSearchParams({
-        url: ep.url,
-        filename: ep.filename,
-    }).toString();
-    chrome.tabs.create({ url: url, active: false }, function (tab) {
-        if (tab && tab.id != null) { iyfParserTabs.set(tab.id, ep.index); }
+// 派单集下载任务给 offscreen 文档(MV3 单例后台页,不占标签栏)。多集并行都跑在这一个文档里。
+async function iyfDispatchDownload(ep) {
+    try {
+        if (!(await chrome.offscreen.hasDocument())) {
+            await chrome.offscreen.createDocument({
+                url: '/iyf-dl.html',
+                reasons: ['BLOBS'],
+                justification: 'iyf 多集下载:拉 HLS 分片、转封装 MP4 并生成 blob 交后台落盘',
+            });
+        }
+        chrome.runtime.sendMessage({
+            Message: 'iyfDlStart',
+            task: { index: ep.index, url: ep.url, filename: ep.filename },
+        });
+    } catch (e) {
+        iyfEpisodeFailed(ep.index, '创建下载环境失败:' + String(e));
+    }
+}
+
+// 幂等锚点:offscreen 内多集并行,靠集索引区分;已 done/failed 的集再来消息一律丢弃。
+function iyfSettled(i) {
+    const ep = iyfJob && iyfJob.episodes[i];
+    return !ep || ep.status === IYF_JOB.STATUS.DONE || ep.status === IYF_JOB.STATUS.FAILED;
+}
+
+// 切片进度上报:只写快照供面板显示,不动状态机
+function iyfHandleEpisodeProgress(index, done, total, phase) {
+    if (!iyfJob || index == null || iyfSettled(index)) { return; }
+    IYF_JOB.markProgress(iyfJob, index, done, total, phase);
+    iyfSaveJob();
+}
+
+// offscreen 转封装完把 blob URL 交过来,由 background 落盘(offscreen 拿不到 chrome.downloads)。
+// 等 state=complete 才算该集完成,随后通知 offscreen 回收 blob。
+function iyfHandleEpisodeBlob(index, blobUrl, filename) {
+    if (!iyfJob || index == null || iyfSettled(index)) { return; }
+    chrome.downloads.download({ url: blobUrl, filename: filename, saveAs: false }, function (id) {
+        if (chrome.runtime.lastError || !id) {
+            chrome.runtime.sendMessage({ Message: 'iyfDlRevoke', blobUrl: blobUrl });
+            iyfHandleEpisodeFailed(index, chrome.runtime.lastError ? chrome.runtime.lastError.message : '下载未启动');
+            return;
+        }
+        const onChanged = function (delta) {
+            if (delta.id !== id || !delta.state) { return; }
+            if (delta.state.current === 'complete') {
+                chrome.downloads.onChanged.removeListener(onChanged);
+                chrome.runtime.sendMessage({ Message: 'iyfDlRevoke', blobUrl: blobUrl });
+                iyfHandleEpisodeDone(index);
+            } else if (delta.state.current === 'interrupted') {
+                chrome.downloads.onChanged.removeListener(onChanged);
+                chrome.runtime.sendMessage({ Message: 'iyfDlRevoke', blobUrl: blobUrl });
+                iyfHandleEpisodeFailed(index, '落盘中断:' + (delta.error ? delta.error.current : 'unknown'));
+            }
+        };
+        chrome.downloads.onChanged.addListener(onChanged);
     });
 }
 
-// 集完成信号(主动消息,根治 tab-close flake):下载页下完/失败各发一条消息,由 background 转到这里。
-// 幂等锚点 = iyfParserTabs:每个下载 tab 只结算一次。不在 map 里(已被 onRemoved 兜底结算过,
-// 或消息重复)就丢弃;集索引取 map 值,不信消息自带字段。
-function iyfHandleEpisodeDone(tabId) {
-    if (tabId == null || !iyfParserTabs.has(tabId)) { return; }
-    const i = iyfParserTabs.get(tabId);
-    iyfParserTabs.delete(tabId);
-    if (!iyfJob) { return; }
-    IYF_JOB.markDone(iyfJob, i);
+function iyfHandleEpisodeDone(index) {
+    if (!iyfJob || index == null || iyfSettled(index)) { return; }
+    IYF_JOB.markDone(iyfJob, index);
     iyfSaveJob();
     iyfPump();
+    iyfCloseOffscreenIfIdle();
 }
 
-function iyfHandleEpisodeFailed(tabId, err) {
-    if (tabId == null || !iyfParserTabs.has(tabId)) { return; }
-    const i = iyfParserTabs.get(tabId);
-    iyfParserTabs.delete(tabId);
-    if (!iyfJob) { return; }
-    iyfEpisodeFailed(i, err || 'download failed');
+function iyfHandleEpisodeFailed(index, err) {
+    if (!iyfJob || index == null || iyfSettled(index)) { return; }
+    iyfEpisodeFailed(index, err || 'download failed');
+    iyfCloseOffscreenIfIdle();
 }
 
-// 兜底:下载 tab 意外关闭(崩溃/用户手动关)且未收到 done/fail 消息 = 该集失败。
-// 正常完成/失败时消息处理已把该 tab 从 map 删除,故这里只会命中「无消息就没了」的异常关闭。
-chrome.tabs.onRemoved.addListener(function (tabId) {
-    if (!iyfParserTabs.has(tabId)) { return; }
-    const i = iyfParserTabs.get(tabId);
-    iyfParserTabs.delete(tabId);
-    if (!iyfJob) { return; }
-    iyfEpisodeFailed(i, 'download tab closed unexpectedly');
-});
+// job 收尾就关掉 offscreen,不常驻占资源
+async function iyfCloseOffscreenIfIdle() {
+    if (iyfJob && !IYF_JOB.isFinished(iyfJob)) { return; }
+    try {
+        if (await chrome.offscreen.hasDocument()) { await chrome.offscreen.closeDocument(); }
+    } catch (e) { /* 已关闭 */ }
+}

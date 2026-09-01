@@ -120,7 +120,11 @@
     }
 
     // 从 parsePlayInfo 的档数组里选目标档:
-    // preferred(如 "1080")命中且可下就选它;否则选可下档里 bitrate 最高的;都不可下返回 null
+    // preferred(如 "1080")命中且可下就选它——用户明确指定时允许 VIP 档;
+    // 否则只在【非 VIP 档】里选 bitrate 最高的。
+    // 承重理由(2026-09-01 真机实测):非会员请求 VIP 档,CDN 不报错而是返回受限内容——
+    // 纯音频无视频轨、且各集返回同一段(两集时长精确同为 1188.048980s),下出来是坏文件。
+    // 故 VIP 档绝不能当默认;没有任何免费档时才退回全集合(交由用户从面板判断)。
     function pickQuality(clarityList, preferred) {
         if (!Array.isArray(clarityList)) { return null; }
         const dl = clarityList.filter(function (c) { return c && c.downloadable; });
@@ -129,7 +133,9 @@
             const hit = dl.find(function (c) { return c.title === preferred; });
             if (hit) { return hit; }
         }
-        return dl.reduce(function (best, c) {
+        const free = dl.filter(function (c) { return !c.isVIP; });
+        const pool = free.length ? free : dl;
+        return pool.reduce(function (best, c) {
             return (c.bitrate || 0) > (best.bitrate || 0) ? c : best;
         });
     }
@@ -267,6 +273,20 @@ if (typeof require !== 'undefined' && require.main === module) {
     ] }] } });
     assert.strictEqual(IYF.pickQuality(multi, '1080').title, '1080');
     assert.strictEqual(IYF.pickQuality(multi, 'nope').title, '1080'); // 落空→最高
+    // VIP 档不当默认(真机:非会员拿 VIP 档会得到纯音频受限内容)——默认选最高的免费档
+    const vipMix = IYF.parsePlayInfo({ data: { info: [{ clarity: [
+        { bitrate: 9000, title: '2160', isVIP: true, isEnabled: true, path: { result: 'vip4k' } },
+        { bitrate: 4000, title: '1080', isVIP: true, isEnabled: true, path: { result: 'vip1080' } },
+        { bitrate: 800, title: '576', isVIP: false, isEnabled: true, path: { result: 'free576' } },
+    ] }] } });
+    assert.strictEqual(IYF.pickQuality(vipMix).title, '576');            // 默认跳过 VIP 档
+    assert.strictEqual(IYF.pickQuality(vipMix, '1080').title, '1080');   // 用户明确指定才给 VIP 档
+    // 全是 VIP 档时退回全集合(交用户判断),不至于什么都下不了
+    const allVip = IYF.parsePlayInfo({ data: { info: [{ clarity: [
+        { bitrate: 4000, title: '1080', isVIP: true, isEnabled: true, path: { result: 'v' } },
+    ] }] } });
+    assert.strictEqual(IYF.pickQuality(allVip).title, '1080');
+
     // 全不可下 → null
     const noneDl = IYF.parsePlayInfo({ data: { info: [{ clarity: [
         { title: '1080', isEnabled: false, path: null },

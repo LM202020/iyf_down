@@ -58,6 +58,13 @@
     function markDownloading(job, i) { job.episodes[i].status = STATUS.DOWNLOADING; }
     function markDone(job, i) { job.episodes[i].status = STATUS.DONE; job.episodes[i].err = ''; }
 
+    // 切片下载进度(只供面板展示,不参与状态机判定)。phase: download|remux|save
+    function markProgress(job, i, done, total, phase) {
+        const ep = job && job.episodes[i];
+        if (!ep) { return; }
+        ep.progress = { done: done, total: total, phase: phase };
+    }
+
     // 集失败:未耗尽重试 → 计数+回待下载,返回 true(将重试);耗尽 → 标失败,返回 false
     function markFailed(job, i, err) {
         const ep = job.episodes[i];
@@ -107,7 +114,7 @@
                 pending: count(STATUS.PENDING),
             },
             episodes: job.episodes.map(function (e) {
-                return { key: e.key, name: e.name, status: e.status, retries: e.retries, err: e.err };
+                return { key: e.key, name: e.name, status: e.status, retries: e.retries, err: e.err, progress: e.progress || null };
             }),
         };
     }
@@ -120,6 +127,7 @@
         markFetching,
         markDownloading,
         markDone,
+        markProgress,
         markFailed,
         cancel,
         failedList,
