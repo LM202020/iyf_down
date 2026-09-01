@@ -43,12 +43,16 @@ async function iyfStartJob(message) {
     if (!probe.ok && probe.code != 0) { return { ok: false, err: probe.err || '签名探针失败' }; }
     // 并发上限:默认 3,可用 chrome.storage.local 的 iyfParallel 覆盖(无 options UI)
     const items = await chrome.storage.local.get({ iyfParallel: 3 });
+    // 4K 单集内存峰值约 1GB(整集切片 540MB + 成片 515MB 同时驻 offscreen,实测值),
+    // 并发 3 就是 3GB → 4K 强制串行。quality 留空时按实际会选中的档判定。
+    const picked = IYF.pickQuality(probe.clarity, message.quality);
+    const big = picked && parseInt(picked.title, 10) >= 2160;
     iyfJob = IYF_JOB.createJob({
         seriesKey: message.seriesKey,
         seriesTitle: message.seriesTitle,
         quality: message.quality,
         episodes: eps,
-        concurrency: items.iyfParallel,
+        concurrency: big ? 1 : items.iyfParallel,
         maxRetries: 2,
     });
     iyfJobTabId = message.tabId;
