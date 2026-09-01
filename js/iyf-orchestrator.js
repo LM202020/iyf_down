@@ -88,10 +88,9 @@ function iyfPump() {
     iyfSaveJob();
 }
 
-// 取数节流:站点对短时并发 video/play 有「访问过量」频率风控(端到端实测:批量并发取数 →
-// 播放页被重定向 iyf.tv/challenge?triggerindex=访问过量 → 后续集 empty clarity)。
-// 逐集取数串成固定间隔的队列错开(下载走 CDN 不撞风控,不节流、并发照旧)。
-// ponytail: 3s 是经验值(站点未公开阈值);仍撞就调大,或改成撞风控退避重试。
+// 取数节流:逐集 video/play 串成固定间隔的队列错开,不给站点打并发峰值(下载走 CDN,不节流、并发照旧)。
+// 注:此前把「访问过量」当成频率风控,2026-09-01 实证推翻——那是没带账号凭证的拒绝话术(见设计 §14.1),
+// 节流并非为规避它。保留只是出于对站点的克制。ponytail: 3s 是经验值。
 const IYF_FETCH_GAP_MS = 3000;
 let iyfNextFetchAt = 0;
 function iyfThrottleFetch() {

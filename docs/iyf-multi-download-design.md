@@ -214,3 +214,45 @@
 
 ### 13.6 验收(=impl-plan T11)
 样本剧前 3 集:本地落盘 mp4、ffprobe H264+AAC 可播、命名 `这一秒过火/这一秒过火-第NN集.mp4` 零填充、状态机全 done(靠消息不靠 tab 关闭)、全程无 m3u8.html/ffmpeg tab、无弹框无第三方。
+
+## 14. 真机调试三项修正(2026-09-01,用户登录态实测)
+
+用户提供登录态调试窗口后连跑端到端,暴露并修掉三个问题。**本节取代 §13.2 的第 7 步、§13.3 全部、§13.5 的风控条目。**
+
+### 14.1 登录凭证:「访问过量」的真因(推翻 §13.5 的风控归因)
+- §13.5 把 `video/play` 返回 `{"data":{"code":5,"msg":"访问过量"}}` 归因为**频率风控**,**这是错的**。
+- **决定性对照(同一时刻、同一接口)**:带账号凭证 → 回「用户签名错误」;只带 vv/pub(游客签名) → 回「访问过量」。
+  它是「拿游客签名要登录内容」的**拒绝话术**,与调用频率无关。
+- 站点自己调 `video/play` 是**两套签名一起带**:`uid/expire/gid/sign/token`(账号)+ `vv/pub`(游客)。
+- 账号凭证来源:**cookie `dn_temp` 里的 `__t` JSON**。
+- **`vv` 必须对「已含账号参数的完整 query」算 md5** —— 先拼账号参数,再签名,顺序反了必错。
+- `region` 可省;`lang=none` 站点没有,已去掉。
+- 实现:`js/iyf-api.js` 的 `iyfMainReadAuth`/`iyfGetAuth`/`iyfResetAuth`/`iyfAuthQuery`。
+- 取数节流(`IYF_FETCH_GAP_MS = 3000`)保留——不为规避风控,只为不给站点打并发峰值。
+
+### 14.2 下载改走 offscreen 单例文档(取代 §13.2 第 7 步、§13.3)
+- 用户反馈「不要弹出新的下载窗口」。改用 **MV3 offscreen document**(`chrome.offscreen`,`reasons:['BLOBS']`),不占标签栏。
+- offscreen 是**单例**:多集并行都跑在同一个文档里,靠**集索引**区分,不再有 tabId。
+- **offscreen 拿不到 `chrome.downloads`** → 转封装完把 blob URL 交 background 落盘,
+  等 `downloads.onChanged state=complete` 再判完成,然后通知 offscreen `revoke`。
+- 幂等锚从 `iyfParserTabs`(tabId→索引)换成**集索引 + `iyfSettled`**:已 done/failed 的集再来消息一律丢弃。
+- job 收尾自动 `chrome.offscreen.closeDocument()`;manifest 加 `"offscreen"` 权限。
+- 面板显示切片级实时进度(download/remux/save 三阶段)。
+
+### 14.3 转封装换 hls.js:支持 4K(H.265/HEVC)
+- 各档编码(ffprobe 实拉切片):`576/720/1080 = h264`,**`2160 = hevc 3840x2160`**。与是否 VIP 无关。
+- **mux.js 只支持 H.264+AAC**,喂 HEVC 会静默只吐音频轨 → 产出纯音频坏文件(旧 bug 现象)。
+- 选型:`mp4box.js` 是 MP4 容器工具**读不了 MPEG-TS**(要自写 HEVC TS demuxer,否决);
+  `ffmpeg.wasm` 可行但 core ~30MB + 需 CSP 加 `'wasm-unsafe-eval'`;
+  **最终走自建 hls.js bundle** —— hls.js 1.6 的 TSDemuxer 原生认 M2TS stream_type `0x24`(HEVC),
+  只抽 TSDemuxer+MP4Remuxer+mp4-generator 打包仅 **60KB**,无 wasm、无 CSP 改动。
+  见 `lib/hls-transmux.min.js`、`tools/hls-transmux-entry.js`、`tools/build-hls-transmux.sh`。
+- **两处必须自己处理**(hls.js 是为 MSE 写的,不是为落盘写的):
+  1. **合轨**:hls.js 音视频分产两条 fMP4(对应两个 SourceBuffer)。用 `MP4.initSegment([videoTrack, audioTrack])`
+     生成含双 trak 的 moov(该 API 本就收数组,官方只是分别传单元素),再把两轨 moof+mdat 依序拼接 → 单文件。
+  2. **时间轴归零**:moof 的 tfdt 写的是 TS **绝对 PTS**,MSE 靠 `SourceBuffer.timestampOffset` 对齐,
+     离线文件没这一层。实测某流 PTS 起点在 2^33 边界(≈95443 秒),不改就成一个 26 小时长的视频。
+     → 拼装时把每个 tfdt 减去基准;音视频用**同一时间基准**(各按自己 timescale 换算),保留原有音画相对偏移。
+- 整集总时长(m3u8 的 EXTINF 累加)传给 `createRemuxer(duration)` 写进 moov,播放器才能显示时长、拖进度条。
+  mux.js 时代的 `fixFileDuration` 已删——它按 version-0 的 32 位 box 布局写死偏移,而 hls.js 的 mvhd 是 version 1(64 位)。
+- 各档一视同仁,默认取 bitrate 最高档(=2160)。`IYF_HEVC_TITLES` 规避名单与面板的 `[H.265 暂不支持]` 标注同步删除。

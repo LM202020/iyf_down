@@ -1,9 +1,9 @@
-// iyf.tv 多集下载 —— 精简下载器页面脚本(跑在编排器新开的普通 tab,非 m3u8.js/service worker)
+// iyf.tv 多集下载 —— 精简下载器页面脚本(跑在 MV3 offscreen 单例文档,非 m3u8.js/service worker)
 // 数据流:orchestrator 签好 chunklist URL → 本页 fetch chunklist → 抽 ts URL 数组
-//   → 并发下载(ts 已自带 CDN 完整签名,直接 fetch,不拼参数)→ mux.js TS→MP4 remux
-//   → chrome.downloads.download 落盘并等 state=complete → 主动 sendMessage(iyfEpisodeDone/Failed) → window.close。
-// 依赖:lib/mux.min.js(提供全局 muxjs)先于本文件加载。
-// ponytail: 只服务 iyf 一种流(标准 media m3u8 + H264/AAC TS,无加密/无 init-segment/无 byteRange),
+//   → 并发下载(ts 已自带 CDN 完整签名,直接 fetch,不拼参数)→ TS→fMP4 转封装
+//   → blob URL 交 background 落盘(offscreen 拿不到 chrome.downloads)→ 回报 iyfEpisodeBlob。
+// 依赖:lib/hls-transmux.min.js(提供全局 HlsTransmux)先于本文件加载。
+// ponytail: 只服务 iyf 一种流(标准 media m3u8 + TS,无加密/无 init-segment/无 byteRange),
 //   故不搬 m3u8.downloader.js 整个 Downloader 类(pipeline/events/range 都用不上),就地写最小并发器。
 
 const IYF_DL = {
@@ -92,82 +92,21 @@ function iyfDownloadAll(urls, onProgress) {
     });
 }
 
-// ---- mux.js remux:按序 push+flush 每段,head 段拼 initSegment+data 并写入总时长 ----
-// 序列同 m3u8.js:1595-1617。fixFileDuration 从 m3u8.js:2219 原样搬入(修 moov 总时长,保证播放器可 seek)。
+// ---- TS→fMP4 转封装:走 lib/hls-transmux.min.js(从 hls.js 抽出的 demux+remux) ----
+// 换掉 mux.js 的原因:mux.js 只支持 H.264,遇到 4K 档(H.265/HEVC)只吐音频轨、产出纯音频坏文件。
+// totalDuration 写进 moov,播放器才能显示时长、拖进度条。
 function iyfRemux(buffers, totalDuration) {
+    const r = HlsTransmux.createRemuxer(totalDuration);
     const out = [];
-    let head = true;
-    let tempBuffer = null;
-    let sawVideo = false;
-    const transmuxer = new muxjs.mp4.Transmuxer({ keepOriginalTimestamps: false, remux: true });
-    transmuxer.on('data', function (segment) {
-        // mux.js 只认 H.264;遇到 H.265/HEVC 只会吐音频轨,必须显式报错而不是产出纯音频坏文件
-        if (segment.type === 'video' || segment.type === 'combined') { sawVideo = true; }
-        if (head) {
-            const data = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
-            data.set(segment.initSegment, 0);
-            data.set(segment.data, segment.initSegment.byteLength);
-            tempBuffer = fixFileDuration(data, totalDuration);
-            return;
-        }
-        tempBuffer = new Uint8Array(segment.data);
-    });
     for (let i = 0; i < buffers.length; i++) {
-        head = (i === 0);
-        tempBuffer = null;
-        transmuxer.push(new Uint8Array(buffers[i]));
-        transmuxer.flush();
-        if (tempBuffer) { out.push(tempBuffer); }
+        r.push(new Uint8Array(buffers[i])).forEach(function (b) { out.push(b); });
     }
-    if (!out.length) { throw new Error('mux.js 未产出任何 mp4 数据'); }
-    if (!sawVideo) { throw new Error('转封装未产出视频轨——该画质为 H.265/HEVC(mux.js 不支持),请改选 1080 或更低画质'); }
+    r.flush().forEach(function (b) { out.push(b); });
+    const sawVideo = r.hasVideo();
+    r.destroy();
+    if (!out.length) { throw new Error('转封装未产出任何 mp4 数据'); }
+    if (!sawVideo) { throw new Error('转封装未产出视频轨——该画质的编码不受支持'); }
     return out;
-}
-
-// fixFileDuration:改写 mp4 头 mvhd/tkhd/mdhd 的 duration 为整片总时长(搬自 m3u8.js:2219,逻辑未改)
-function fixFileDuration(data, duration) {
-    let mvhdBoxDuration = duration * 90000;
-    function getBoxDuration(data, duration, index) {
-        let boxDuration = "";
-        index += 16;    // 偏移量 16 为 timescale
-        boxDuration += data[index].toString(16);
-        boxDuration += data[++index].toString(16);
-        boxDuration += data[++index].toString(16);
-        boxDuration += data[++index].toString(16);
-        boxDuration = parseInt(boxDuration, 16);
-        boxDuration *= duration;
-        return boxDuration;
-    }
-    for (let i = 0; i < data.length; i++) {
-        if (data[i] == 0x6D && data[i + 1] == 0x76 && data[i + 2] == 0x68 && data[i + 3] == 0x64) { // mvhd
-            mvhdBoxDuration = getBoxDuration(data, duration, i);
-            data[i + 11] = 0;   // 删除创建日期
-            i += 20;            // mvhd 偏移 20 为 duration
-            data[i] = (mvhdBoxDuration & 0xFF000000) >> 24;
-            data[++i] = (mvhdBoxDuration & 0xFF0000) >> 16;
-            data[++i] = (mvhdBoxDuration & 0xFF00) >> 8;
-            data[++i] = mvhdBoxDuration & 0xFF;
-            continue;
-        }
-        if (data[i] == 0x74 && data[i + 1] == 0x6B && data[i + 2] == 0x68 && data[i + 3] == 0x64) { // tkhd
-            i += 24;            // tkhd 偏移 24 为 duration
-            data[i] = (mvhdBoxDuration & 0xFF000000) >> 24;
-            data[++i] = (mvhdBoxDuration & 0xFF0000) >> 16;
-            data[++i] = (mvhdBoxDuration & 0xFF00) >> 8;
-            data[++i] = mvhdBoxDuration & 0xFF;
-            continue;
-        }
-        if (data[i] == 0x6D && data[i + 1] == 0x64 && data[i + 2] == 0x68 && data[i + 3] == 0x64) { // mdhd
-            let mdhdBoxDuration = getBoxDuration(data, duration, i);
-            i += 20;            // mdhd 偏移 20 为 duration
-            data[i] = (mdhdBoxDuration & 0xFF000000) >> 24;
-            data[++i] = (mdhdBoxDuration & 0xFF0000) >> 16;
-            data[++i] = (mdhdBoxDuration & 0xFF00) >> 8;
-            data[++i] = mdhdBoxDuration & 0xFF;
-            continue;
-        }
-    }
-    return data;
 }
 
 // ---- 上报:进度/完成/失败都带 index(offscreen 单例内多集并行,靠 index 区分,不再有 tabId)----

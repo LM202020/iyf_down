@@ -35,6 +35,15 @@ Version: 1.6.16
 Download:
 `https://github.com/video-dev/hls.js/releases/tag/v1.6.16` -> `release.zip` -> `dist/hls.min.js`
 
+lib/hls-transmux.min.js
+Source: https://github.com/video-dev/hls.js
+License: Apache-2.0 license
+Version: 1.6.16
+Build:
+自建 bundle,只抽 hls.js 的 TSDemuxer + MP4Remuxer + mp4-generator(TS→fMP4 转封装),
+不含播放/MSE/ABR。用于 iyf 多集下载:mux.js 只支持 H.264,4K 档是 H.265/HEVC 转不了。
+入口见 `tools/hls-transmux-entry.js`,构建命令见 `tools/build-hls-transmux.sh`。
+
 lib/mqtt.min.js
 Source: https://github.com/mqttjs/MQTT.js
 License: MIT license
