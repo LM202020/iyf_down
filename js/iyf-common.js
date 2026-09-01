@@ -119,8 +119,11 @@
         });
     }
 
-    // 从 parsePlayInfo 的档数组里选目标档:
-    // preferred(如 "1080")命中且可下就选它;否则选可下档里 bitrate 最高的;都不可下返回 null
+    // 真机实测(2026-09-01,ffprobe 实拉切片)各档编码:
+    //   576=h264 896x504 / 720=h264 1280x720 / 1080=h264 1920x1080 / 2160=hevc 3840x2160
+    // 转封装走 hls.js(见 lib/hls-transmux.min.js),H.264/H.265 都支持,故各档一视同仁。
+    // 从 parsePlayInfo 的档数组里选目标档:preferred(如 "1080")命中且可下就选它,
+    // 否则选 bitrate 最高的;都不可下返回 null。
     function pickQuality(clarityList, preferred) {
         if (!Array.isArray(clarityList)) { return null; }
         const dl = clarityList.filter(function (c) { return c && c.downloadable; });
@@ -134,6 +137,27 @@
         });
     }
 
+    // iyf 页面"当前页面"资源列表噪音判定:iyf 播放页正片是 HLS/DASH,真正能下成一集的入口是
+    // m3u8/mpd playlist;占位/广告 mp4(如 empty2.mp4)、裸 ts 分片、图片、json 等对用户是噪音。
+    // 返回 true = 该条应在"当前页面"列表隐藏。只认 iyf 域名资源(靠 data.webUrl),非 iyf 页面一律
+    // false,绝不影响猫抓在其它站点的原有列表。ponytail: 只留 playlist 是最贴合"只看真正剧集"的白名单;
+    // 万一某剧正片是裸 mp4(iyf 实测均 HLS,暂无此例)再放宽。
+    function isEpisodeNoise(data) {
+        if (!data || !isIyfHost(data.webUrl)) { return false; }
+        return data.parsing !== 'm3u8' && data.parsing !== 'mpd';
+    }
+
+    // 站点「访问过量」判定:响应体 data.code==5 且 data.msg="访问过量"
+    // (实测原文 {"data":{"code":5,"info":[],"msg":"访问过量"},"ret":200})。
+    // 真机对照实证(2026-09-01):这不是频率限制——同一时刻同一接口,带账号凭证调回「用户签名错误」、
+    // 只带 vv/pub(游客签名)才回「访问过量」,故它是「拿游客签名要登录内容」的拒绝话术。
+    // 命中即返回 true,上层提示重新登录,而非误导成 empty clarity / 签名规则已变。
+    function detectRateLimit(json) {
+        const d = json && json.data;
+        if (!d) { return false; }
+        return d.code === 5 || (typeof d.msg === 'string' && d.msg.indexOf('访问过量') !== -1);
+    }
+
     return {
         IYF_HOSTS,
         isIyfHost,
@@ -145,6 +169,8 @@
         parsePlayList,
         parsePlayInfo,
         pickQuality,
+        isEpisodeNoise,
+        detectRateLimit,
     };
 });
 
@@ -244,6 +270,16 @@ if (typeof require !== 'undefined' && require.main === module) {
     ] }] } });
     assert.strictEqual(IYF.pickQuality(multi, '1080').title, '1080');
     assert.strictEqual(IYF.pickQuality(multi, 'nope').title, '1080'); // 落空→最高
+    // 2160(HEVC)与 H.264 各档一视同仁:转封装走 hls.js,两种编码都支持
+    const tiers = IYF.parsePlayInfo({ data: { info: [{ clarity: [
+        { bitrate: 9000, title: '2160', isVIP: true, isEnabled: true, path: { result: 'hevc4k' } },
+        { bitrate: 4000, title: '1080', isVIP: true, isEnabled: true, path: { result: 'h264_1080' } },
+        { bitrate: 800, title: '576', isVIP: false, isEnabled: true, path: { result: 'h264_576' } },
+    ] }] } });
+    assert.strictEqual(IYF.pickQuality(tiers).title, '2160');          // 默认取 bitrate 最高
+    assert.strictEqual(IYF.pickQuality(tiers, '1080').title, '1080');
+    assert.strictEqual(IYF.pickQuality(tiers, '576').title, '576');
+
     // 全不可下 → null
     const noneDl = IYF.parsePlayInfo({ data: { info: [{ clarity: [
         { title: '1080', isEnabled: false, path: null },
@@ -251,6 +287,25 @@ if (typeof require !== 'undefined' && require.main === module) {
     assert.strictEqual(IYF.pickQuality(noneDl, '1080'), null);
     assert.strictEqual(IYF.pickQuality([], '1080'), null);
     assert.strictEqual(IYF.pickQuality(null, '1080'), null);
+
+    // isEpisodeNoise:iyf 页面只留 m3u8/mpd,滤掉其余;非 iyf 页面/无 webUrl 一律不滤
+    const iyfPage = 'https://www.iyf.tv/play/ABC';
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: 'm3u8' }), false); // 正片 playlist 保留
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: 'mpd' }), false);
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: false }), true);   // empty2.mp4/裸 ts 隐藏
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: iyfPage, parsing: 'json' }), true);
+    assert.strictEqual(IYF.isEpisodeNoise({ webUrl: 'https://youtube.com/x', parsing: false }), false); // 非 iyf 不滤
+    assert.strictEqual(IYF.isEpisodeNoise({ parsing: false }), false); // 无 webUrl 不滤
+    assert.strictEqual(IYF.isEpisodeNoise(null), false);
+
+    // detectRateLimit:data.code==5 或 msg 含"访问过量"→ true;正常响应/空 → false
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 5, info: [], msg: '访问过量' } }), true);
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 0, msg: '访问过量' } }), true); // 只看 msg 也算
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 5 } }), true);
+    assert.strictEqual(IYF.detectRateLimit({ data: { code: 0, info: [{ clarity: [] }] } }), false);
+    assert.strictEqual(IYF.detectRateLimit({ data: {} }), false);
+    assert.strictEqual(IYF.detectRateLimit({}), false);
+    assert.strictEqual(IYF.detectRateLimit(null), false);
 
     console.log('iyf-common self-check: all assertions passed');
 }

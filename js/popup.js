@@ -460,7 +460,8 @@ function AddMedia(data, currentTab = true) {
         $filter_ext.append(html);
     }
     // 如果被筛选出去 直接隐藏
-    if (!filterExt.get(data.ext) || duplicateFilenamesSet?.has(data.name)) {
+    // iyf 页面额外过滤:"当前页面"列表只留真正的正片入口(m3u8/mpd),隐藏 empty2.mp4 等占位/裸 ts 噪音
+    if (!filterExt.get(data.ext) || duplicateFilenamesSet?.has(data.name) || (currentTab && IYF.isEpisodeNoise(data))) {
         data.html.hide();
         data.html.find("input").prop("checked", false);
     }

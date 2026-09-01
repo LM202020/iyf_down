@@ -33,8 +33,10 @@
 - [~] **T10 仓库独立化 `iyf_down`**:已完成——非-fork 仓库 `LM202020/iyf_down` 建立、origin 已指向、upstream 已删、manifest homepage_url 已指(c5e4b57)。待做——README/CLAUDE.md 身份改造(cat-catch/猫抓表述改 iyf_down,**保留 LICENSE + 注明基于 cat-catch (GPL-3.0) 二开**);端到端过后 push(c5e4b57 起尚未 push)。
 - [~] **T11 端到端(方案2 最终验收)**:样本剧经 iyf-dl 路径落盘。**代码通路验证通过,批量全绿受阻于站点风控。**
   - **已验证(2026-08-31 headful 实测)**:第 01 集经 iyf-dl.html 完整走通——fetch chunklist → 并发下 ts → mux.js remux → chrome.downloads 落盘,ffprobe 确认 H264+AAC、43min、120MB 可播;完成信号双向都验(01 靠消息标 done、02/03 靠消息标 failed);全程 `legacyTabs=0`(证明彻底不走 m3u8.js);无重复计(幂等 OK)。
-  - **未达/缺口**:①3 集全绿未达——02/03 `empty clarity`,真因=站点「访问过量」频率风控(播放页被重定向 `iyf.tv/challenge?...triggerindex=访问过量`),风控在**取数(video/play)阶段**触发,非下载器缺陷(下载走 CDN 不受影响)。②真机命名未验——Playwright `download.suggested_filename` 对 `chrome.downloads.download({filename})` 指定名退化为 UUID,抓不到 `剧名/剧名-第NN集.mp4`;命名逻辑(orchestrator 构造 + iyf-dl 透传)代码正确但需换验法(读 chrome.downloads 默认目录实际落盘名)。
-  - **待决(给用户)**:批量并发取数触发风控是真实产品缺陷 → 是否加**取数节流**(集间 video/play 拉开间隔 / 降默认并发)+ 风控冷却后重验。
+  - ~~**未达/缺口**:①02/03 `empty clarity`,真因=站点「访问过量」频率风控。②真机命名未验。~~
+    **【2026-09-01 两项均已解决,①的归因是错的】**:①「访问过量」不是频率限制,是**没带账号凭证**的拒绝话术
+    (决定性对照见下方 2026-09-01 进度);补上凭证后多集连续取数无阻。②改用 `chrome.downloads.search`
+    读真实落盘路径(Playwright 会劫持下载改名),命名 `剧名/剧名-第NN集.mp4` 已实测正确。
 - 验收证据:`scratchpad/downloads_plan2/*.mp4`(01 集,勿删)。
 
 ## 关键常量/事实(供各 subagent)
@@ -62,4 +64,24 @@
 - 2026-08-31:T6/T7 完成提交(f227349、18ad2c6)。**T8 端到端(过渡版)跑通并固化 42c57ba**——tsAddArg 判废(截 vendtime/vhash 致 CDN reset),改「只签 chunklist,CDN 回填 ts 签名」;`video/play` 取分集需 `a=0`;m3u8.js 临时加 forceLocal 3 行走本地 mux。3 个可播 mp4 证据留存上轮 scratchpad `downloads/`。用户拍板**方案2**(自写下载页替代 openParser 通道)+ **仓库独立化 iyf_down**。c5e4b57:建非-fork 仓库 `LM202020/iyf_down`、origin 迁移、upstream 删除、homepage_url 改指;iyf-dl.html/js 新文件同车。
 - 2026-08-31:**交接事故记录**:上轮 session 交接卡声称方案2改动已提交为 `43ba95d`、交接卡自身提交为 `6a1e3f8`——两 SHA 经 reflog 核实**从不存在**,改动实际悬在工作树、卡也未落盘(草稿在上轮 scratchpad RESUME.md)。本轮接手后按 git 现读重建:方案2原样固化 9cd1edb。
 - 2026-08-31:T9 完成——评审 9cd1edb 发现两处问题并修正提交 7b6d2b6:①done/failed 消息结算不查 iyfParserTabs 且信任消息 index,与 onRemoved 兜底有双结算竞态 → 幂等锚定 map、索引取 map 值;②iyf-dl 落盘启动 800ms 后即 window.close,blob URL 随页面销毁会掐断大文件写盘 → 等 downloads.onChanged state=complete(同 m3u8.js:912 时机)再报再关。设计文档 §13 + 本计划 T9–T11 补齐。T11 端到端进行中。
+- 2026-09-01:**真机调试三项修正,1080/4K 端到端均自验通过(设计文档 §14)。**
+  - **①登录凭证(6cddce1)**:`video/play` 必须同时带账号凭证(cookie `dn_temp` 的 `__t` JSON 里的
+    uid/expire/gid/sign/token)与 vv/pub 两套签名,且 `vv` 要对**已含账号参数的完整 query** 算 md5。
+    **推翻此前「访问过量=频率风控」的归因**——同一时刻同一接口,带凭证回「用户签名错误」、只带 vv/pub 才回
+    「访问过量」,它是拒绝话术不是限流。补上凭证后连续取数无阻。
+  - **②offscreen(ad21bff)**:下载从「新开 tab」改为 MV3 offscreen 单例文档(不占标签栏),幂等锚从 tabId
+    换成集索引;offscreen 拿不到 `chrome.downloads`,故转封装完把 blob 交 background 落盘等 complete。
+    面板加切片级实时进度。
+  - **③4K/HEVC**:2160 档是 H.265,mux.js 只认 H.264、静默丢视频轨(旧的 28.6MB 纯音频坏文件即此因)。
+    改用自建 hls.js bundle(`lib/hls-transmux.min.js`,60KB,无 wasm/无 CSP 改动),另需自己合轨 +
+    把 moof 的 tfdt 归零(hls.js 为 MSE 写,时间戳是绝对 PTS)。详见设计 §14.3。
+  - **验收证据(自驱端到端,非用户手测)**:
+    - 1080 两集并发:`下载tab=0`、offscreen 自动开关、进度 9/105→105/105、done 2/2、303MB+332MB、
+      `h264 1920x1080 + aac`。
+    - 2160 单集:默认档自动选 2160、105/105、落盘 515MB、`hevc 3840x2160 + aac`、时长 1188s、
+      `start_time≈0`(时间轴归零生效)、5s/600s/1150s 三点 seek 均抽出 3840x2160 真帧、全片解码无错误。
+    - **注**:Playwright `connect_over_cdp` 会劫持下载改名到 `/var/folders/**/playwright-artifacts-*/<UUID>`,
+      真实路径要用 `chrome.downloads.search` 读,别信 `download.suggested_filename`。
+  - **待办**:4K 单集内存峰值约 1GB(540MB ts + 515MB mp4 同时驻 offscreen),默认集并发 3 →
+    3 集 4K 同下峰值约 3GB,有 OOM 风险,尚未实测也未加保护。
 - 2026-08-31:**T11 端到端(方案2)——代码通路验证通过,批量全绿受站点风控阻断。** headful 实测:第 01 集经 iyf-dl.html 全程走通(fetch chunklist→并发下 ts→mux remux→chrome.downloads 落盘,ffprobe H264+AAC/43min/120MB 可播),完成信号双向验证(done/failed 均靠消息),`legacyTabs=0` 证不走 m3u8.js,幂等无重复计。02/03 集 `empty clarity` 追因=站点「访问过量」频率风控(播放页转 `iyf.tv/challenge?triggerindex=访问过量`),风控在取数阶段,非下载器 bug。**踩坑**:Playwright 拷贝 profile 缓存旧 SW,首轮实际跑旧 m3u8 通道(legacyTabs=3、文件大小与 forceLocal 版吻合),删 `Default/Service Worker` 缓存 + SW 侧 `typeof iyfOpenDownloader` 断言后才跑到新代码。真机命名 Playwright 抓不到(chrome.downloads filename 退化成 UUID),命名逻辑代码正确待换验法。**待用户决策**:取数节流(规避风控)+ 是否 push(c5e4b57 起未 push)。设计 §13.5 补风控上限。

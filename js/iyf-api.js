@@ -42,7 +42,7 @@ async function iyfGetPConfig(tabId) {
     } catch (e) { return { ok: false, err: '读取密钥对失败:' + String(e) }; }
     const pConfig = res && res[0] ? res[0].result : null;
     if (!pConfig || !pConfig.publicKey || !Array.isArray(pConfig.privateKey) || !pConfig.privateKey.length) {
-        return { ok: false, err: '页面未含 pConfig 密钥对(签名规则或页面结构已变)' };
+        return { ok: false, err: '未读到密钥对——请先登录 iyf 账号(未登录时页面不含 pConfig);若已登录仍失败,可能签名规则或页面结构已变' };
     }
     iyfPConfigCache.set(tabId, pConfig);
     return { ok: true, pConfig: pConfig };
@@ -51,6 +51,54 @@ async function iyfGetPConfig(tabId) {
 // 清一个 tab 的密钥对缓存(job 起始调,避免上次 job / 页面重载后的旧密钥被误判成「签名规则已变」)
 function iyfResetPConfig(tabId) {
     iyfPConfigCache.delete(tabId);
+}
+
+// 登录账号凭证缓存:tabId -> {uid, expire, gid, sign, token}
+const iyfAuthCache = new Map();
+
+// 注入 MAIN world 读登录凭证:cookie dn_temp 里的 __t JSON 含 {uid,expire,gid,sign,token}。
+// 真机抓包实证(2026-09-01):站点调 video/play 是「账号凭证 + vv/pub」两套一起带;只带 vv/pub
+// (游客签名)去要登录内容,站点回 {"data":{"code":5,"msg":"访问过量"}}——那不是频率限制,是拒绝话术。
+// 序列化限制:不能引用任何外部闭包变量。未登录返回 null。
+function iyfMainReadAuth() {
+    try {
+        let dn = '';
+        document.cookie.split(';').forEach(function (s) {
+            const i = s.indexOf('=');
+            if (i < 0) { return; }
+            if (s.slice(0, i).trim() === 'dn_temp') {
+                try { dn = decodeURIComponent(s.slice(i + 1)); } catch (e) { dn = s.slice(i + 1); }
+            }
+        });
+        const m = dn.match(/__t=(\{.*\})/);
+        if (!m) { return null; }
+        const t = JSON.parse(m[1]);
+        if (!t || !t.uid || !t.sign || !t.token) { return null; }
+        return { uid: t.uid, expire: t.expire, gid: t.gid, sign: t.sign, token: t.token };
+    } catch (e) { return null; }
+}
+
+// 读登录凭证(每 tab 缓存)→ {ok, auth} | {ok:false, err, needLogin}
+async function iyfGetAuth(tabId) {
+    if (!tabId) { return { ok: false, err: 'missing tabId' }; }
+    if (iyfAuthCache.has(tabId)) { return { ok: true, auth: iyfAuthCache.get(tabId) }; }
+    let res;
+    try {
+        res = await chrome.scripting.executeScript({
+            target: { tabId: tabId }, world: 'MAIN', func: iyfMainReadAuth,
+        });
+    } catch (e) { return { ok: false, err: '读取登录凭证失败:' + String(e) }; }
+    const auth = res && res[0] ? res[0].result : null;
+    if (!auth) { return { ok: false, err: '未登录 iyf 账号——请先在页面登录后重试(取流需要登录态凭证)', needLogin: true }; }
+    iyfAuthCache.set(tabId, auth);
+    return { ok: true, auth: auth };
+}
+
+function iyfResetAuth(tabId) { iyfAuthCache.delete(tabId); }
+
+// 账号凭证拼成 query 片段。必须在算 vv/pub 之前拼上——vv 是对「含账号参数的完整 query」算的 md5。
+function iyfAuthQuery(auth) {
+    return `&uid=${auth.uid}&expire=${auth.expire}&gid=${auth.gid}&sign=${auth.sign}&token=${auth.token}`;
 }
 
 // 注入到 MAIN world 的取数函数:依次试各 url,返回首个成功的 JSON;全失败返回 null。
@@ -82,14 +130,17 @@ async function iyfFetchPlayList(tabId, seriesKey) {
     if (!tabId || !seriesKey) { return { ok: false, err: 'missing tabId/seriesKey', episodes: [] }; }
     const pc = await iyfGetPConfig(tabId);
     if (!pc.ok) { return { ok: false, err: pc.err, episodes: [] }; }
+    const ac = await iyfGetAuth(tabId);
+    if (!ac.ok) { return { ok: false, err: ac.err, episodes: [], needLogin: ac.needLogin }; }
     // ponytail: cid=0,1,4,146 等参数可能因剧而异——待端到端核实(能否从页面已有请求/全局拿真实参数)
     const vid = encodeURIComponent(seriesKey);
     const urls = IYF_API_HOSTS.map(function (h) {
-        const u = `https://${h}/v3/video/languagesplaylist?cinema=1&vid=${vid}&lsk=1&taxis=0&cid=0,1,4,146`;
+        const u = `https://${h}/v3/video/languagesplaylist?cinema=1&vid=${vid}&lsk=1&taxis=0&cid=0,1,4,146` + iyfAuthQuery(ac.auth);
         return iyfSignUrl(u, pc.pConfig.publicKey, pc.pConfig.privateKey);
     });
     try {
         const json = await iyfInjectFetch(tabId, urls);
+        if (IYF.detectRateLimit(json)) { return { ok: false, err: 'iyf 回「访问过量」——通常是登录凭证缺失/失效,请重新登录后重试', episodes: [], rateLimited: true }; }
         const episodes = IYF.parsePlayList(json);
         if (!episodes.length) { return { ok: false, err: 'empty playlist', episodes: [] }; }
         return { ok: true, episodes: episodes };
@@ -103,16 +154,20 @@ async function iyfFetchPlay(tabId, episodeKey) {
     if (!tabId || !episodeKey) { return { ok: false, err: 'missing tabId/episodeKey', clarity: [] }; }
     const pc = await iyfGetPConfig(tabId);
     if (!pc.ok) { return { ok: false, err: pc.err, clarity: [] }; }
-    // video/play 需 vv/pub 签名(裸调返回 code:1 用户签名错误)。
+    const ac = await iyfGetAuth(tabId);
+    if (!ac.ok) { return { ok: false, err: ac.err, clarity: [], needLogin: ac.needLogin }; }
+    // video/play 必须「账号凭证 + vv/pub」两套签名一起带(真机抓包照抄站点;只带 vv/pub 会被回
+    // code:5「访问过量」)。region 实测可省。vv/pub 由 iyfSignUrl 对含账号参数的完整 query 计算。
     // a=0 表示按「具体分集 key」取流;a=1 是「系列聚合」模式,只认剧集页 key、对分集 key 返回「视频不存在」。
-    // 我们传的永远是 playList 里的分集 key,故必须 a=0(端到端实测:a=1 → 视频不存在)。
     const id = encodeURIComponent(episodeKey);
     const urls = IYF_API_HOSTS.map(function (h) {
-        const u = `https://${h}/v3/video/play?cinema=1&id=${id}&a=0&lang=none&usersign=1&device=1&isMasterSupport=1`;
+        const u = `https://${h}/v3/video/play?cinema=1&id=${id}&a=0&usersign=1&device=1&isMasterSupport=1` + iyfAuthQuery(ac.auth);
         return iyfSignUrl(u, pc.pConfig.publicKey, pc.pConfig.privateKey);
     });
     try {
         const json = await iyfInjectFetch(tabId, urls);
+        // code:5「访问过量」= 登录凭证缺失/失效的拒绝话术(非频率限制,真机对照实证)
+        if (IYF.detectRateLimit(json)) { return { ok: false, err: 'iyf 回「访问过量」——通常是登录凭证缺失/失效,请重新登录后重试', clarity: [], rateLimited: true }; }
         const clarity = IYF.parsePlayInfo(json);
         // code 透传给启动探针判「签名规则已变」(code==1=用户签名错误)
         const code = json && typeof json.code !== 'undefined' ? json.code : undefined;

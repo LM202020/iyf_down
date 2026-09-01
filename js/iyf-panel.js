@@ -71,7 +71,8 @@
             .filter(function (c) { return c && c.downloadable; });
         if (!list.length) { $q.prop("disabled", true); return; }
         list.forEach(function (c) {
-            $q.append($("<option></option>").val(c.title).text(c.title + (c.description ? " " + c.description : "")));
+            $q.append($("<option></option>").val(c.title)
+                .text(c.title + (c.description ? " " + c.description : "")));
         });
         const best = list.reduce(function (a, c) { return (c.bitrate || 0) > (a.bitrate || 0) ? c : a; });
         $q.val(best.title);
@@ -137,6 +138,15 @@
         const $list = $("#iyfEpStatus").empty();
         state.episodes.forEach(function (ep) {
             let txt = STATUS_TEXT[ep.status] || ep.status;
+            // 下载中显示切片进度/阶段(offscreen 下载器上报):下载 37% (80/215) → 转封装 → 落盘
+            if (ep.status === "downloading" && ep.progress && ep.progress.total > 0) {
+                const pr = ep.progress;
+                if (pr.phase === "remux") { txt = "转封装中"; }
+                else if (pr.phase === "save") { txt = "落盘中"; }
+                else {
+                    txt = "下载 " + Math.floor(pr.done * 100 / pr.total) + "% (" + pr.done + "/" + pr.total + ")";
+                }
+            }
             if (ep.status === "failed") {
                 txt += "(已重试" + ep.retries + "次)";
                 if (ep.err) { txt += " " + ep.err; }
