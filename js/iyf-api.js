@@ -16,15 +16,28 @@ function iyfSignUrl(url, publicKey, privateKey) {
     return url + (url.indexOf('?') === -1 ? '?' : '&') + 'vv=' + s.vv + '&pub=' + s.pub;
 }
 
-// 注入到 MAIN world 读密钥对:在 iyf 页面上下文 fetch(location.href) 取播放页 HTML,正则抽 pConfig。
+// 注入到 MAIN world 读密钥对:先从当前 DOM 抠——pConfig 就内联在播放页 HTML 里,页面已经
+// 带着它了,不必再问一次网络。原实现只走 fetch(location.href),而那一步会被站点自己的
+// Service Worker、HTTP 缓存、其它扩展拦截或喂旧内容(真机实测有环境因此读不到)。
+// DOM 里没有(SPA 客户端路由进来的页面可能不含)才 fetch 兜底,并绕开缓存。
 // 序列化限制:不能引用任何外部闭包变量。拿不到返回 null。
 async function iyfMainReadPConfig() {
-    try {
-        const resp = await fetch(location.href, { credentials: 'include' });
-        const html = await resp.text();
-        const m = html.match(/"pConfig":\{"publicKey":"([^"]+)","privateKey":(\[[^\]]*\])\}/);
+    const re = /"pConfig":\{"publicKey":"([^"]+)","privateKey":(\[[^\]]*\])\}/;
+    function pick(text) {
+        const m = text && text.match(re);
         if (!m) { return null; }
-        return { publicKey: m[1], privateKey: JSON.parse(m[2]) };
+        try {
+            const priv = JSON.parse(m[2]);
+            return (Array.isArray(priv) && priv.length) ? { publicKey: m[1], privateKey: priv } : null;
+        } catch (e) { return null; }
+    }
+    try {
+        const fromDom = pick(document.documentElement.innerHTML);
+        if (fromDom) { return fromDom; }
+    } catch (e) { /* DOM 读不了就走下面的 fetch */ }
+    try {
+        const resp = await fetch(location.href, { credentials: 'include', cache: 'reload' });
+        return pick(await resp.text());
     } catch (e) { return null; }
 }
 
@@ -42,7 +55,8 @@ async function iyfGetPConfig(tabId) {
     } catch (e) { return { ok: false, err: '读取密钥对失败:' + String(e) }; }
     const pConfig = res && res[0] ? res[0].result : null;
     if (!pConfig || !pConfig.publicKey || !Array.isArray(pConfig.privateKey) || !pConfig.privateKey.length) {
-        return { ok: false, err: '未读到密钥对——请先登录 iyf 账号(未登录时页面不含 pConfig);若已登录仍失败,可能签名规则或页面结构已变' };
+        // 别再把这里归因成「没登录」:实测未登录裸请求播放页同样返回 pConfig,它与登录态无关。
+        return { ok: false, err: '未读到密钥对——页面里没找到 pConfig。请刷新播放页后重试;仍失败则可能是站点页面结构已变' };
     }
     iyfPConfigCache.set(tabId, pConfig);
     return { ok: true, pConfig: pConfig };
