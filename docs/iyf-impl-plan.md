@@ -82,6 +82,28 @@
       `start_time≈0`(时间轴归零生效)、5s/600s/1150s 三点 seek 均抽出 3840x2160 真帧、全片解码无错误。
     - **注**:Playwright `connect_over_cdp` 会劫持下载改名到 `/var/folders/**/playwright-artifacts-*/<UUID>`,
       真实路径要用 `chrome.downloads.search` 读,别信 `download.suggested_filename`。
-  - **待办**:4K 单集内存峰值约 1GB(540MB ts + 515MB mp4 同时驻 offscreen),默认集并发 3 →
-    3 集 4K 同下峰值约 3GB,有 OOM 风险,尚未实测也未加保护。
+  - **4K 内存(已处理,9221f7b)**:单集峰值约 1GB(540MB ts + 515MB mp4 同时驻 offscreen),
+    并发 3 就是 3GB → 选中 2160 及以上档时并发强制压到 1(quality 留空按 `pickQuality` 实选档判定)。
+    实测:2160 → concurrency 1,1080 → concurrency 3。
+
+## 真机调试环境与踩坑(2026-09-01 实战总结)
+
+调试窗口 = headful Google Chrome for Testing,`--user-data-dir` 指向一个常驻 profile(登录态存在里面)、
+`--load-extension` + `--disable-extensions-except` 指向仓库根、`--remote-debugging-port=9222`,
+再用 Playwright `connect_over_cdp` 驱动。踩过的坑,按代价排序:
+
+1. **绝不用 `chrome.runtime.reload()`** —— 会把扩展搞成禁用态且 SW 唤不醒,只能重启窗口。改完代码**重启整个窗口**。
+2. **改了 SW 代码必须清 profile 的 SW 缓存**:`rm -rf "$PROFILE/Default/Service Worker" "$PROFILE/Default/Code Cache"`,
+   否则 `--load-extension` 指向新代码、跑的却是旧字节码。脚本里必须加**新符号断言**(`typeof iyfXxx === 'function'`)fail-fast。
+3. **抓 SW 要遍历,不能 `next()` 取第一个** —— 窗口里往往不止一个扩展有 `background.js`,
+   取错了就一直卡在错的那个上(症状:`chrome.tabs.query` 返回空、`t.url` undefined)。遍历全部 SW 逐个测项目符号才对。
+4. **Playwright `connect_over_cdp` 会劫持下载**:文件被改名挪到 `/var/folders/**/playwright-artifacts-*/<UUID>`。
+   这不是扩展 bug。验证真实落盘路径要用 `chrome.downloads.search`,别信 `download.suggested_filename`。
+5. **CDP `page.on("response")` 对已打开的页面挂不上**(抓不到任何网络)。要抓站点请求得**注入 fetch/XHR hook**。
+6. **抓包别截断 URL** —— 曾 `slice(0,240)` 把 `token=` 后面的 `vv/pub` 截掉,直接导致误判签名机制。
+7. **端到端别派 subagent**,自己写阻塞脚本用后台任务跑,日志落文件。
+8. 窗口刚重启时页面还在导航,`chrome.tabs.query` 查不到播放页 → `Error: No tab with id`。
+   发起 job 前要**轮询等到 SW 侧真能查到播放页 tab**,再多等几秒。
+9. 连着发两个 job 之间要等上一个 `finished`(cancel 只置 `cancelled`,在途集还要收尾),
+   否则第二个会被「已有未完 job」拒掉。
 - 2026-08-31:**T11 端到端(方案2)——代码通路验证通过,批量全绿受站点风控阻断。** headful 实测:第 01 集经 iyf-dl.html 全程走通(fetch chunklist→并发下 ts→mux remux→chrome.downloads 落盘,ffprobe H264+AAC/43min/120MB 可播),完成信号双向验证(done/failed 均靠消息),`legacyTabs=0` 证不走 m3u8.js,幂等无重复计。02/03 集 `empty clarity` 追因=站点「访问过量」频率风控(播放页转 `iyf.tv/challenge?triggerindex=访问过量`),风控在取数阶段,非下载器 bug。**踩坑**:Playwright 拷贝 profile 缓存旧 SW,首轮实际跑旧 m3u8 通道(legacyTabs=3、文件大小与 forceLocal 版吻合),删 `Default/Service Worker` 缓存 + SW 侧 `typeof iyfOpenDownloader` 断言后才跑到新代码。真机命名 Playwright 抓不到(chrome.downloads filename 退化成 UUID),命名逻辑代码正确待换验法。**待用户决策**:取数节流(规避风控)+ 是否 push(c5e4b57 起未 push)。设计 §13.5 补风控上限。
